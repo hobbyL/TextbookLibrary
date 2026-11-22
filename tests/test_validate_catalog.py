@@ -202,6 +202,24 @@ class ValidateCatalogTest(unittest.TestCase):
         with self.assertRaisesRegex(validator.CatalogError, "PDFium 无法打开"):
             validator.prepare_pdf(self.root, "books/math/grade-01/upper/corrupt.pdf")
 
+    def test_catalog_schema_and_corrupt_cover_fail(self) -> None:
+        catalog = validator.load_catalog(self.root)
+        catalog["books"][0]["grade"] = 0
+        (self.root / "catalog.json").write_text(
+            json.dumps(catalog, ensure_ascii=False), encoding="utf-8"
+        )
+        with self.assertRaisesRegex(validator.CatalogError, "catalog.json schema"):
+            validator.validate_catalog(self.root)
+
+        catalog["books"][0]["grade"] = 1
+        self.cover_path.write_bytes(b"not a WebP")
+        catalog["books"][0]["coverSha256"] = validator.sha256_file(self.cover_path)
+        (self.root / "catalog.json").write_text(
+            json.dumps(catalog, ensure_ascii=False), encoding="utf-8"
+        )
+        with self.assertRaisesRegex(validator.CatalogError, "封面无法解码"):
+            validator.validate_catalog(self.root)
+
 
 if __name__ == "__main__":
     unittest.main()
