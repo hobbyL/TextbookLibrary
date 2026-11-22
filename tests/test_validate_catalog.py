@@ -131,6 +131,77 @@ class ValidateCatalogTest(unittest.TestCase):
         with self.assertRaisesRegex(validator.CatalogError, "coverPath"):
             validator.validate_catalog(self.root)
 
+    def test_duplicate_edition_id_fails(self) -> None:
+        catalog = validator.load_catalog(self.root)
+        duplicate = dict(catalog["books"][0])
+        duplicate["sha256"] = "0" * 64
+        catalog["books"].append(duplicate)
+        (self.root / "catalog.json").write_text(
+            json.dumps(catalog, ensure_ascii=False), encoding="utf-8"
+        )
+        with self.assertRaisesRegex(validator.CatalogError, "版次 ID 重复"):
+            validator.validate_catalog(self.root)
+
+    def test_duplicate_pdf_sha_fails(self) -> None:
+        catalog = validator.load_catalog(self.root)
+        duplicate = dict(catalog["books"][0])
+        duplicate["editionId"] = "pep-math-1a-2025"
+        catalog["books"].append(duplicate)
+        (self.root / "catalog.json").write_text(
+            json.dumps(catalog, ensure_ascii=False), encoding="utf-8"
+        )
+        with self.assertRaisesRegex(validator.CatalogError, "PDF SHA-256 重复"):
+            validator.validate_catalog(self.root)
+
+    def test_pdf_length_and_page_count_mismatches_fail(self) -> None:
+        catalog = validator.load_catalog(self.root)
+        catalog["books"][0]["bytes"] += 1
+        (self.root / "catalog.json").write_text(
+            json.dumps(catalog, ensure_ascii=False), encoding="utf-8"
+        )
+        with self.assertRaisesRegex(validator.CatalogError, "PDF 字节数不匹配"):
+            validator.validate_catalog(self.root)
+
+        catalog["books"][0]["bytes"] -= 1
+        catalog["books"][0]["pageCount"] += 1
+        (self.root / "catalog.json").write_text(
+            json.dumps(catalog, ensure_ascii=False), encoding="utf-8"
+        )
+        with self.assertRaisesRegex(validator.CatalogError, "PDF 页数不匹配"):
+            validator.validate_catalog(self.root)
+
+    def test_git_commit_and_blob_mismatches_fail(self) -> None:
+        catalog = validator.load_catalog(self.root)
+        catalog["books"][0]["sourceCommit"] = "0" * 40
+        (self.root / "catalog.json").write_text(
+            json.dumps(catalog, ensure_ascii=False), encoding="utf-8"
+        )
+        with self.assertRaisesRegex(validator.CatalogError, "git rev-parse"):
+            validator.validate_catalog(self.root)
+
+        catalog["books"][0]["sourceCommit"] = git(self.root, "rev-parse", "HEAD")
+        catalog["books"][0]["gitBlobSha"] = "0" * 40
+        (self.root / "catalog.json").write_text(
+            json.dumps(catalog, ensure_ascii=False), encoding="utf-8"
+        )
+        with self.assertRaisesRegex(validator.CatalogError, "Git blob SHA 不匹配"):
+            validator.validate_catalog(self.root)
+
+    def test_cover_hash_mismatch_fails(self) -> None:
+        catalog = validator.load_catalog(self.root)
+        catalog["books"][0]["coverSha256"] = "0" * 64
+        (self.root / "catalog.json").write_text(
+            json.dumps(catalog, ensure_ascii=False), encoding="utf-8"
+        )
+        with self.assertRaisesRegex(validator.CatalogError, "封面 SHA-256 不匹配"):
+            validator.validate_catalog(self.root)
+
+    def test_corrupt_pdf_cannot_be_prepared(self) -> None:
+        path = self.root / "books/math/grade-01/upper/corrupt.pdf"
+        path.write_bytes(b"not a PDF")
+        with self.assertRaisesRegex(validator.CatalogError, "PDFium 无法打开"):
+            validator.prepare_pdf(self.root, "books/math/grade-01/upper/corrupt.pdf")
+
 
 if __name__ == "__main__":
     unittest.main()
