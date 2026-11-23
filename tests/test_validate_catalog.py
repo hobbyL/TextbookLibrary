@@ -397,6 +397,22 @@ class ValidateCatalogTest(unittest.TestCase):
                 github_repository="hobbyL/TextbookLibrary",
             )
 
+    def test_action_checks_batch_rights_before_processing(self) -> None:
+        root, _ = self.add_library_fixture()
+        head_before = git(root, "rev-parse", "HEAD")
+
+        with self.assertRaisesRegex(validator.CatalogError, "所有选中的 PDF"):
+            action_input.process(
+                {"pdf_choice": "auto"},
+                root=root,
+                github_ref_name="main",
+                github_repository="hobbyL/TextbookLibrary",
+            )
+
+        self.assertEqual(git(root, "rev-parse", "HEAD"), head_before)
+        self.assertFalse((root / "covers").exists())
+        self.assertEqual(validator.load_catalog(root)["books"], [])
+
     def test_action_auto_processes_all_pdfs_in_latest_commit(self) -> None:
         root, first_source = self.add_library_fixture()
         second_source = (

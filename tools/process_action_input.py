@@ -300,9 +300,11 @@ def process(
     confirmed = confirmed is True or str(confirmed).lower() == "true"
     redistribution_evidence = str(inputs.get("redistribution_evidence", "")).strip()
     if not confirmed:
-        raise catalog_tool.CatalogError("必须明确确认该 PDF 可公开再分发")
+        raise catalog_tool.CatalogError("必须明确确认所有选中的 PDF 均可公开再分发")
     if not redistribution_evidence:
-        raise catalog_tool.CatalogError("必须提供可追溯的公开再分发授权依据")
+        raise catalog_tool.CatalogError(
+            "必须提供覆盖所有选中 PDF 的可追溯公开再分发授权依据"
+        )
 
     prepared_books = []
     for pdf_path in pdf_paths:

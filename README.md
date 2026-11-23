@@ -42,12 +42,14 @@ When processing a batch, leave the single-book metadata overrides (`edition_id`,
 facts and `evidence_pdf_pages`) blank. Scanned PDFs or books with an unrecognized
 layout can be processed individually with manual overrides.
 
-The form requires a traceable redistribution-evidence reference covering all
-selected PDFs and an explicit confirmation that all may be redistributed
-publicly. A PDF cannot establish that the rightsholder permits public
-redistribution. The workflow renders covers, extracts PDF metrics, validates
-the fixed source URLs, updates `catalog.json`, and pushes the generated catalog
-change. Original filenames are preserved in `sourcePath`.
+Successful runs require a traceable redistribution-evidence reference covering
+all selected PDFs and an explicit confirmation that all may be redistributed
+publicly. The job checks these before processing files, so the fields can be
+left blank when dispatching just to see the validation error. A PDF cannot
+establish that the rightsholder permits public redistribution. The workflow
+renders covers, extracts PDF metrics, validates the fixed source URLs, updates
+`catalog.json`, and pushes the generated catalog change. Original filenames
+are preserved in `sourcePath`.
 
 `upper` means 上册 and `lower` means 下册. The path must follow
 `books/<subject>/grade-<n>/<upper|lower>/<filename>.pdf`.

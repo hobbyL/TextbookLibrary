@@ -69,12 +69,12 @@ on:
         required: false
         type: string
       redistribution_evidence:
-        description: Rightsholder permission reference covering every selected PDF
-        required: true
+        description: Required by the job; must cover every selected PDF
+        required: false
         type: string
       confirm_public_redistribution:
-        description: Confirm every selected PDF may be redistributed publicly
-        required: true
+        description: The job requires confirmation that every selected PDF may be redistributed
+        required: false
         default: false
         type: boolean
 
