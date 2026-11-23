@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -75,13 +76,6 @@ def git(root: Path, *args: str) -> str:
         detail = result.stderr.strip() or result.stdout.strip()
         raise CatalogError(f"git {' '.join(args)} 失败：{detail}")
     return result.stdout.strip()
-
-
-def file_commit(root: Path, relative: str) -> str:
-    commit = git(root, "log", "-1", "--format=%H", "--", relative)
-    if len(commit) != 40:
-        raise CatalogError(f"文件尚未提交到 Git：{relative}")
-    return commit
 
 
 def tree_blob(root: Path, commit: str, relative: str) -> str:
@@ -178,14 +172,75 @@ def canonical_pdf_url(repository: str, commit: str, path: str) -> str:
     return f"https://raw.githubusercontent.com/{encoded}"
 
 
-def expected_book_path(book: dict) -> str:
+def expected_book_directory(book: dict) -> str:
     semester = {"上": "upper", "下": "lower"}.get(book["semester"])
     if semester is None:
         raise CatalogError(f"学期无效：{book['editionId']}")
     return (
         f"books/{book['subject']}/grade-{book['grade']:02d}/"
-        f"{semester}/{book['editionId']}.pdf"
+        f"{semester}"
     )
+
+
+def validate_source_path(book: dict, source_path: str) -> None:
+    path = PurePosixPath(source_path)
+    if (
+        path.parent.as_posix() != expected_book_directory(book)
+        or path.suffix.lower() != ".pdf"
+        or path.name == ".pdf"
+    ):
+        raise CatalogError(
+            f"sourcePath 必须位于学科/年级/学期目录且为 PDF：{source_path}"
+        )
+
+
+def pin_book(root: Path, repository: str, book: dict) -> dict:
+    pinned = dict(book)
+    source_path = pinned.get("sourcePath")
+    cover_path = pinned.get("coverPath")
+    if not isinstance(source_path, str) or not isinstance(cover_path, str):
+        raise CatalogError("每条记录必须先填写 sourcePath 和 coverPath")
+    pdf, source_path = safe_file(root, source_path)
+    cover, cover_path = safe_file(root, cover_path)
+    validate_source_path(pinned, source_path)
+    pdf_sha, file_size, page_count, pdf_text = pdf_info(pdf)
+    if file_size >= MAX_FILE_BYTES:
+        raise CatalogError(f"PDF 达到或超过 100 MiB，常规 Git 不支持：{source_path}")
+    cover_sha = sha256_file(cover)
+    if cover_path != f"covers/{pdf_sha}.webp":
+        raise CatalogError(f"coverPath 必须使用 PDF SHA 命名：covers/{pdf_sha}.webp")
+
+    # Pin both assets to one immutable tree snapshot, even if they were added in
+    # separate commits. This avoids requiring every book to be recommitted.
+    source_commit = git(root, "rev-parse", "HEAD")
+    if len(source_commit) != 40:
+        raise CatalogError("无法取得教材资源 source commit")
+    pdf_blob = tree_blob(root, source_commit, source_path)
+    cover_blob = tree_blob(root, source_commit, cover_path)
+    if worktree_blob(root, source_path) != pdf_blob:
+        raise CatalogError(f"PDF 工作区内容与已提交 commit 不同：{source_path}")
+    if worktree_blob(root, cover_path) != cover_blob:
+        raise CatalogError(f"封面工作区内容与已提交 commit 不同：{cover_path}")
+
+    pinned.update(
+        {
+            "sha256": pdf_sha,
+            "bytes": file_size,
+            "pageCount": page_count,
+            "pdfText": pdf_text,
+            "downloadUrl": canonical_pdf_url(repository, source_commit, source_path),
+            "sourceRepository": repository,
+            "sourceCommit": source_commit,
+            "sourcePath": source_path,
+            "gitBlobSha": pdf_blob,
+            "checkedAt": datetime.now(timezone.utc).isoformat(),
+            "evidencePdfPages": sorted(set(pinned.get("evidencePdfPages", [1]))),
+            "coverPath": cover_path,
+            "coverSha256": cover_sha,
+            "coverSourcePdfPage": 1,
+        }
+    )
+    return pinned
 
 
 def pin_catalog(root: Path = ROOT) -> None:
@@ -194,54 +249,15 @@ def pin_catalog(root: Path = ROOT) -> None:
     if not isinstance(repository, str) or "/" not in repository:
         raise CatalogError("catalog.repository 必须是 owner/repository")
     updated = json.loads(json.dumps(catalog))
-    for book in updated.get("books", []):
-        source_path = book.get("sourcePath")
-        cover_path = book.get("coverPath")
-        if not isinstance(source_path, str) or not isinstance(cover_path, str):
-            raise CatalogError("每条记录必须先填写 sourcePath 和 coverPath")
-        pdf, source_path = safe_file(root, source_path)
-        cover, cover_path = safe_file(root, cover_path)
-        if source_path != expected_book_path(book):
-            raise CatalogError(f"sourcePath 与学科/年级/学期/版次不匹配：{source_path}")
-        pdf_sha, file_size, page_count, pdf_text = pdf_info(pdf)
-        if file_size >= MAX_FILE_BYTES:
-            raise CatalogError(f"PDF 达到或超过 100 MiB，常规 Git 不支持：{source_path}")
-        cover_sha = sha256_file(cover)
-        if cover_path != f"covers/{pdf_sha}.webp":
-            raise CatalogError(f"coverPath 必须使用 PDF SHA 命名：covers/{pdf_sha}.webp")
-        pdf_commit = file_commit(root, source_path)
-        cover_commit = file_commit(root, cover_path)
-        if pdf_commit != cover_commit:
-            raise CatalogError(f"PDF 与封面必须在同一个 Git commit：{source_path}")
-        pdf_blob = tree_blob(root, pdf_commit, source_path)
-        cover_blob = tree_blob(root, pdf_commit, cover_path)
-        if worktree_blob(root, source_path) != pdf_blob:
-            raise CatalogError(f"PDF 工作区内容与已提交 commit 不同：{source_path}")
-        if worktree_blob(root, cover_path) != cover_blob:
-            raise CatalogError(f"封面工作区内容与已提交 commit 不同：{cover_path}")
-        book.update(
-            {
-                "sha256": pdf_sha,
-                "bytes": file_size,
-                "pageCount": page_count,
-                "pdfText": pdf_text,
-                "downloadUrl": canonical_pdf_url(repository, pdf_commit, source_path),
-                "sourceRepository": repository,
-                "sourceCommit": pdf_commit,
-                "sourcePath": source_path,
-                "gitBlobSha": pdf_blob,
-                "checkedAt": datetime.now(timezone.utc).isoformat(),
-                "evidencePdfPages": sorted(set(book.get("evidencePdfPages", [1]))),
-                "coverPath": cover_path,
-                "coverSha256": cover_sha,
-                "coverSourcePdfPage": 1,
-            }
-        )
+    updated["books"] = [pin_book(root, repository, book) for book in updated["books"]]
     write_catalog(root, updated)
 
 
 def validate_catalog(root: Path = ROOT) -> list[str]:
-    catalog = load_catalog(root)
+    return validate_catalog_data(root, load_catalog(root))
+
+
+def validate_catalog_data(root: Path, catalog: dict) -> list[str]:
     schema = json.loads((root / "catalog.schema.json").read_text(encoding="utf-8"))
     try:
         jsonschema.validate(
@@ -269,8 +285,7 @@ def validate_catalog(root: Path = ROOT) -> list[str]:
         seen_sha.add(book["sha256"])
         if book["sourceRepository"] != repository:
             raise CatalogError(f"来源仓库与 catalog.repository 不一致：{book_id}")
-        if book["sourcePath"] != expected_book_path(book):
-            raise CatalogError(f"sourcePath 与册次信息不匹配：{book_id}")
+        validate_source_path(book, book["sourcePath"])
         if book["coverPath"] != f"covers/{book['sha256']}.webp":
             raise CatalogError(f"coverPath 与 PDF SHA 不匹配：{book_id}")
         if (
@@ -350,6 +365,156 @@ def prepare_pdf(root: Path, raw_pdf: str) -> dict:
     return result
 
 
+def _has_staged_changes(root: Path) -> bool:
+    result = subprocess.run(
+        ["git", "-C", str(root), "diff", "--cached", "--quiet"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 1:
+        return True
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise CatalogError(f"无法检查 Git 暂存区：{detail}")
+    return False
+
+
+def _commit_assets(root: Path, paths: list[str], edition_id: str) -> bool:
+    git(root, "add", "-A", "--", *paths)
+    if not _has_staged_changes(root):
+        return False
+    git(root, "commit", "-m", f"Add textbook assets: {edition_id}")
+    return True
+
+
+def add_book(
+    root: Path,
+    *,
+    pdf_path: str,
+    subject: str,
+    grade: int,
+    semester: str,
+    edition_id: str,
+    title: str,
+    publisher: str,
+    edition_label: str,
+    edition_notes: str,
+    redistribution_evidence: str,
+    public_redistribution_confirmed: bool,
+    curriculum_standard: str | None = None,
+    approval_year: int | None = None,
+    publication_date: str | None = None,
+    edition_number: int | None = None,
+    printing_date: str | None = None,
+    printing_number: int | None = None,
+    evidence_pdf_pages: list[int] | None = None,
+) -> tuple[dict, bool, list[str]]:
+    if not public_redistribution_confirmed:
+        raise CatalogError("必须明确确认该 PDF 可公开再分发")
+    if not redistribution_evidence.strip():
+        raise CatalogError("必须提供可追溯的公开再分发授权依据")
+    if not re.fullmatch(r"[a-z][a-z0-9_-]*", subject):
+        raise CatalogError("subject 必须是小写 ASCII 标识符")
+    if not 1 <= grade <= 12:
+        raise CatalogError("grade 必须在 1 到 12 之间")
+    if semester not in {"upper", "lower"}:
+        raise CatalogError("semester 必须是 upper 或 lower")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", edition_id):
+        raise CatalogError("edition-id 必须是小写 ASCII 标识符")
+    for name, value in (
+        ("title", title),
+        ("publisher", publisher),
+        ("edition-label", edition_label),
+        ("edition-notes", edition_notes),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise CatalogError(f"{name} 不能为空")
+    if approval_year is not None and not 1900 <= approval_year <= 2099:
+        raise CatalogError("approval-year 必须在 1900 到 2099 之间")
+    if edition_number is not None and edition_number < 1:
+        raise CatalogError("edition-number 必须大于等于 1")
+    if printing_number is not None and printing_number < 1:
+        raise CatalogError("printing-number 必须大于等于 1")
+    for name, value in (
+        ("curriculum-standard", curriculum_standard),
+        ("publication-date", publication_date),
+        ("printing-date", printing_date),
+    ):
+        if value is not None and not value.strip():
+            raise CatalogError(f"{name} 为空时请省略该参数")
+    if _has_staged_changes(root):
+        raise CatalogError("Git 暂存区已有其他改动；请先提交或取消暂存后重试")
+    if not git(root, "config", "user.name") or not git(root, "config", "user.email"):
+        raise CatalogError("请先配置本地 Git user.name 与 user.email")
+
+    catalog = load_catalog(root)
+    validate_catalog_data(root, catalog)
+    repository = catalog.get("repository")
+    if not isinstance(repository, str) or not re.fullmatch(
+        r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository
+    ):
+        raise CatalogError("catalog.repository 必须是 owner/repository")
+    if any(
+        book.get("subject") == subject and book.get("editionId") == edition_id
+        for book in catalog["books"]
+    ):
+        raise CatalogError(f"该学科版次已登记：{edition_id}")
+
+    source_pdf, source_path = safe_file(root, pdf_path)
+    if not source_path.startswith("books/") or source_pdf.suffix.lower() != ".pdf":
+        raise CatalogError("PDF 必须来自书库 books/ 目录")
+    pdf_sha, file_size, page_count, _ = pdf_info(source_pdf)
+    if file_size >= MAX_FILE_BYTES:
+        raise CatalogError(f"PDF 达到或超过 100 MiB，常规 Git 不支持：{source_path}")
+    pages = sorted(set(evidence_pdf_pages or [1]))
+    if not pages or any(
+        isinstance(page, bool) or not isinstance(page, int) or page < 1 or page > page_count
+        for page in pages
+    ):
+        raise CatalogError("evidence-page 必须是 PDF 范围内的正整数")
+    if any(book.get("sha256") == pdf_sha for book in catalog["books"]):
+        raise CatalogError(f"相同 PDF SHA-256 已登记：{pdf_sha}")
+
+    semester_label = "上" if semester == "upper" else "下"
+    book = {
+        "subject": subject,
+        "grade": grade,
+        "semester": semester_label,
+        "title": title.strip(),
+        "publisher": publisher.strip(),
+        "editionId": edition_id,
+        "curriculumStandard": curriculum_standard,
+        "approvalYear": approval_year,
+        "editionLabel": edition_label.strip(),
+        "editionNotes": edition_notes.strip(),
+        "publicationDate": publication_date,
+        "editionNumber": edition_number,
+        "printingDate": printing_date,
+        "printingNumber": printing_number,
+        "downloadable": True,
+        "redistributionPermissionVerified": True,
+        "redistributionEvidence": redistribution_evidence.strip(),
+        "evidencePdfPages": pages,
+    }
+    validate_source_path(book, source_path)
+
+    prepared = prepare_pdf(root, source_path)
+    if prepared["sha256"] != pdf_sha:
+        raise CatalogError("PDF 在整理过程中发生变化")
+    book.update(prepared)
+
+    asset_paths = [source_path, prepared["coverPath"]]
+    assets_committed = _commit_assets(root, asset_paths, edition_id)
+    book["sourcePath"] = source_path
+    pinned = pin_book(root, repository, book)
+    candidate = json.loads(json.dumps(catalog))
+    candidate["books"].append(pinned)
+    warnings = validate_catalog_data(root, candidate)
+    write_catalog(root, candidate)
+    return pinned, assets_committed, warnings
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="教材书库 PDF 准备与目录校验")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -359,6 +524,55 @@ def main(argv: list[str] | None = None) -> int:
     prepare.add_argument("--pdf", required=True, help="相对书库根目录的 PDF 路径")
     pin = commands.add_parser("pin", help="将目录记录绑定到已提交的 PDF/封面 commit")
     pin.set_defaults(command="pin")
+    add = commands.add_parser(
+        "add",
+        help="整理 PDF、提交源文件/封面并创建可下载书目",
+        description=(
+            "一个命令归一 PDF 路径、生成封面、提交源资源并写入 catalog.json。"
+            "需要准确的书目信息和公开再分发授权依据。"
+        ),
+    )
+    add.add_argument("--pdf", required=True, help="当前 PDF 在书库中的相对路径")
+    add.add_argument("--subject", required=True, help="学科 slug，例如 math")
+    add.add_argument("--grade", required=True, type=int, help="年级，1 到 12")
+    add.add_argument(
+        "--semester", required=True, choices=("upper", "lower"), help="目标学期目录"
+    )
+    add.add_argument("--edition-id", required=True, help="稳定的小写 ASCII 版次 ID")
+    add.add_argument("--title", required=True, help="书目标题")
+    add.add_argument("--publisher", required=True, help="出版社")
+    add.add_argument("--edition-label", required=True, help="可见版次标签")
+    add.add_argument("--edition-notes", required=True, help="版次事实或补充说明")
+    add.add_argument("--curriculum-standard", help="课程标准；未知时留空")
+    add.add_argument("--approval-year", type=int, help="审定年份；未知时留空")
+    add.add_argument("--publication-date", help="出版日期；未知时留空")
+    add.add_argument("--edition-number", type=int, help="版次序号；未知时留空")
+    add.add_argument("--printing-date", help="印刷日期；未知时留空")
+    add.add_argument("--printing-number", type=int, help="印次；未知时留空")
+    add.add_argument(
+        "--evidence-page",
+        action="append",
+        type=int,
+        dest="evidence_pages",
+        help="版次证据 PDF 页码，可重复；默认第 1 页",
+    )
+    add.add_argument(
+        "--redistribution-evidence",
+        required=True,
+        help="权利方授权依据链接或可追溯记录编号",
+    )
+    add.add_argument(
+        "--confirm-public-redistribution",
+        action="store_true",
+        required=True,
+        help="确认你已核实该文件允许公开再分发",
+    )
+    add.add_argument(
+        "--commit-assets",
+        action="store_true",
+        required=True,
+        help="允许此命令提交它整理的 PDF 与封面 Git 资源",
+    )
     args = parser.parse_args(argv)
     try:
         if args.command == "prepare":
@@ -366,6 +580,36 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "pin":
             pin_catalog(ROOT)
             print("已更新 catalog.json 的 commit、blob、SHA、大小和页数。")
+        elif args.command == "add":
+            book, assets_committed, warnings = add_book(
+                ROOT,
+                pdf_path=args.pdf,
+                subject=args.subject,
+                grade=args.grade,
+                semester=args.semester,
+                edition_id=args.edition_id,
+                title=args.title,
+                publisher=args.publisher,
+                edition_label=args.edition_label,
+                edition_notes=args.edition_notes,
+                curriculum_standard=args.curriculum_standard,
+                approval_year=args.approval_year,
+                publication_date=args.publication_date,
+                edition_number=args.edition_number,
+                printing_date=args.printing_date,
+                printing_number=args.printing_number,
+                evidence_pdf_pages=args.evidence_pages,
+                redistribution_evidence=args.redistribution_evidence,
+                public_redistribution_confirmed=args.confirm_public_redistribution,
+            )
+            for warning in warnings:
+                print(f"警告：{warning}", file=sys.stderr)
+            print(f"已登记可下载书目：{book['editionId']}")
+            print("catalog.json 已更新但未提交或推送；请检查 diff 后自行同步仓库。")
+            if assets_committed:
+                print("PDF 与封面已作为独立 Git source commit 提交。")
+            else:
+                print("PDF 与封面已在当前 Git source commit 中，无需新建资源提交。")
         else:
             warnings = validate_catalog(ROOT)
             for warning in warnings:

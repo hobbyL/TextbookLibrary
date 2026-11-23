@@ -15,40 +15,58 @@ content.
 ```text
 catalog.json
 catalog.schema.json
-books/<subject>/grade-<n>/<upper|lower>/<edition-id>.pdf
+books/<subject>/grade-<n>/<upper|lower>/<original-filename>.pdf
 covers/<pdf-sha256>.webp
 tools/validate_catalog.py
 tools/requirements.txt
 tests/test_validate_catalog.py
+.github/workflows/process-textbook.yml
 ```
 
-## Prepare a book
+## Add a book through GitHub
 
-Create the permanent PDF path, then run:
+Upload the PDF with its original filename into the correct subject/grade/semester
+directory on `main`, then run **Actions → Process textbook catalog → Run
+workflow**. The form takes the PDF path, subject, grade, semester, edition ID,
+title, publisher and edition facts. The workflow renders the cover, extracts PDF
+metrics, validates the fixed source URL, updates `catalog.json`, and pushes the
+generated catalog change. The `editionId` is separate from the original PDF
+filename; the filename is preserved in `sourcePath`.
+
+`upper` means 上册 and `lower` means 下册. The selected semester must match the
+PDF's directory; the workflow rejects mismatches. No filename change is needed.
+
+Example paths:
 
 ```bash
-python3 tools/validate_catalog.py prepare --pdf books/math/grade-02/upper/example-edition.pdf
+books/math/grade-02/upper/数学 人教版 二年级 上册 2024版.pdf
+books/math/grade-02/lower/数学 人教版 二年级 下册 2022版.pdf
 ```
 
-The command opens the PDF with PDFium, measures its page count and extractable
-text, and renders page 1 to a WebP cover. It prints the SHA-256, byte count,
-page count, text statistics and cover hash.
+The workflow requires exact title, publisher, edition label/notes and a
+traceable redistribution-evidence reference. Optional publication/printing
+facts remain null when unknown. The confirmation input is an explicit curator
+assertion; the workflow cannot determine whether the evidence grants permission.
+The PDF becomes public as soon as it is uploaded, before the Action runs. Only
+upload material authorized for public redistribution. The form rejects a path
+whose subject/grade/semester directory conflicts with the submitted fields.
 
-After confirming redistribution rights, commit the PDF and generated cover.
-Then add a catalog entry containing its subject, grade, semester, title,
-publisher, edition facts, `sourcePath`, `coverPath` and permission evidence.
-Use a new path for each edition; do not overwrite a published file.
+The Action runs only on `main` and needs `contents: write` to push the generated
+catalog. If repository policy blocks workflow writes, allow write access for
+`GITHUB_TOKEN` under Settings → Actions → General → Workflow permissions.
 
-Pin the catalog entry to the commit containing its PDF and cover:
+## Local fallback
+
+The `add` command supports the same metadata flow locally. It preserves the
+original PDF name and requires explicit `--confirm-public-redistribution` and
+`--commit-assets` flags.
+
+To validate the complete catalog at any time:
 
 ```bash
-python3 tools/validate_catalog.py pin
 python3 tools/validate_catalog.py check
 ```
 
-The PDF/cover commit and catalog commit are separate because a commit cannot
-contain its own hash. The catalog stores immutable source commit, path, Git
-blob SHA, PDF hash, length, page count, text statistics and cover hash.
-
 For local setup, create a virtual environment and install
-`tools/requirements.txt`. The validator never uploads or pushes files.
+`tools/requirements.txt`. The local validator never pushes files; the GitHub
+Action pushes catalog updates using its scoped `GITHUB_TOKEN`.

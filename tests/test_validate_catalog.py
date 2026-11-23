@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+import process_action_input as action_input
 import validate_catalog as validator
 
 
@@ -99,6 +100,54 @@ class ValidateCatalogTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def add_library_fixture(self, semester: str = "upper") -> tuple[Path, str]:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        shutil.copyfile(
+            Path(validator.__file__).resolve().parents[1] / "catalog.schema.json",
+            root / "catalog.schema.json",
+        )
+        (root / "catalog.json").write_text(
+            json.dumps(
+                {"schemaVersion": 1, "repository": "hobbyL/TextbookLibrary", "books": []},
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        source = (
+            f"books/math/grade-02/{semester}/"
+            "数学 人教版 二年级 上册 2024版.pdf"
+        )
+        source_path = root / source
+        source_path.parent.mkdir(parents=True)
+        source_path.write_bytes(one_page_pdf())
+        git(root, "init", "-q")
+        git(root, "config", "user.email", "textbook-test@example.invalid")
+        git(root, "config", "user.name", "Textbook Test")
+        git(root, "add", "catalog.json", "catalog.schema.json")
+        git(root, "commit", "-qm", "Initialize test library")
+        return root, source
+
+    def add_book(self, root: Path, source: str) -> tuple[dict, bool, list[str]]:
+        return validator.add_book(
+            root,
+            pdf_path=source,
+            subject="math",
+            grade=2,
+            semester="upper",
+            edition_id="pep-math-2a-2024",
+            title="人教版数学二年级上册",
+            publisher="人民教育出版社",
+            edition_label="2024版",
+            edition_notes="依据版权页登记版次。",
+            approval_year=2024,
+            redistribution_evidence="https://example.invalid/permission/123",
+            public_redistribution_confirmed=True,
+        )
 
     def test_valid_committed_pdf_and_cover_pass(self) -> None:
         warnings = validator.validate_catalog(self.root)
@@ -219,6 +268,163 @@ class ValidateCatalogTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(validator.CatalogError, "封面无法解码"):
             validator.validate_catalog(self.root)
+
+    def test_add_preserves_original_filename_and_writes_valid_row(self) -> None:
+        root, source = self.add_library_fixture()
+
+        book, assets_committed, warnings = self.add_book(root, source)
+
+        self.assertTrue(assets_committed)
+        self.assertEqual(warnings, [])
+        self.assertTrue((root / source).is_file())
+        self.assertTrue((root / book["coverPath"]).is_file())
+        self.assertEqual(book["sourcePath"], source)
+        self.assertEqual(book["editionId"], "pep-math-2a-2024")
+        self.assertEqual(book["sourceCommit"], git(root, "rev-parse", "HEAD"))
+        self.assertEqual(len(validator.load_catalog(root)["books"]), 1)
+        self.assertEqual(validator.validate_catalog(root), [])
+
+    def test_add_requires_rights_confirmation_before_touching_files(self) -> None:
+        root, source = self.add_library_fixture()
+
+        with self.assertRaisesRegex(validator.CatalogError, "明确确认"):
+            validator.add_book(
+                root,
+                pdf_path=source,
+                subject="math",
+                grade=2,
+                semester="upper",
+                edition_id="pep-math-2a-2024",
+                title="人教版数学二年级上册",
+                publisher="人民教育出版社",
+                edition_label="2024版",
+                edition_notes="依据版权页登记版次。",
+                redistribution_evidence="",
+                public_redistribution_confirmed=False,
+            )
+
+        self.assertTrue((root / source).is_file())
+        self.assertEqual(validator.load_catalog(root)["books"], [])
+        self.assertFalse((root / "covers").exists())
+
+    def test_add_refuses_staged_changes_before_rehoming(self) -> None:
+        root, source = self.add_library_fixture()
+        (root / "unrelated.txt").write_text("keep staged", encoding="utf-8")
+        git(root, "add", "unrelated.txt")
+
+        with self.assertRaisesRegex(validator.CatalogError, "暂存区已有其他改动"):
+            self.add_book(root, source)
+
+        self.assertTrue((root / source).is_file())
+        self.assertEqual(validator.load_catalog(root)["books"], [])
+        self.assertFalse((root / "covers").exists())
+
+    def test_add_rejects_wrong_semester_directory_without_renaming(self) -> None:
+        root, source = self.add_library_fixture(semester="lower")
+
+        with self.assertRaisesRegex(validator.CatalogError, "学期目录"):
+            self.add_book(root, source)
+
+        self.assertTrue((root / source).is_file())
+        self.assertEqual(validator.load_catalog(root)["books"], [])
+        self.assertFalse((root / "covers").exists())
+
+    def test_add_refuses_duplicate_edition_without_changing_catalog(self) -> None:
+        root, source = self.add_library_fixture()
+        self.add_book(root, source)
+        before = (root / "catalog.json").read_bytes()
+        with self.assertRaisesRegex(validator.CatalogError, "版次已登记"):
+            self.add_book(root, source)
+
+        self.assertEqual((root / "catalog.json").read_bytes(), before)
+
+    def test_action_form_processes_original_filename_and_updates_catalog(self) -> None:
+        root, source = self.add_library_fixture()
+        inputs = {
+            "pdf_path": source,
+            "subject": "math",
+            "grade": "2",
+            "semester": "upper",
+            "edition_id": "pep-math-2a-2024",
+            "title": "人教版数学二年级上册",
+            "publisher": "人民教育出版社",
+            "edition_label": "2024版",
+            "edition_notes": "依据版权页登记版次。",
+            "approval_year": "2024",
+            "evidence_pdf_pages": "1",
+            "redistribution_evidence": "https://example.invalid/permission/123",
+            "confirm_public_redistribution": True,
+        }
+
+        action_input.process(
+            inputs,
+            root=root,
+            github_ref_name="main",
+            github_repository="hobbyL/TextbookLibrary",
+        )
+
+        catalog = validator.load_catalog(root)
+        self.assertEqual(len(catalog["books"]), 1)
+        book = catalog["books"][0]
+        self.assertEqual(book["sourcePath"], source)
+        self.assertEqual(book["editionId"], "pep-math-2a-2024")
+        self.assertEqual(book["evidencePdfPages"], [1])
+        self.assertTrue(book["downloadable"])
+        self.assertEqual(validator.validate_catalog(root), [])
+
+    def test_action_form_rejects_non_main_branch_before_processing(self) -> None:
+        root, source = self.add_library_fixture()
+        inputs = {
+            "pdf_path": source,
+            "subject": "math",
+            "grade": "2",
+            "semester": "upper",
+            "edition_id": "pep-math-2a-2024",
+            "title": "人教版数学二年级上册",
+            "publisher": "人民教育出版社",
+            "edition_label": "2024版",
+            "edition_notes": "依据版权页登记版次。",
+            "redistribution_evidence": "https://example.invalid/permission/123",
+            "confirm_public_redistribution": True,
+        }
+
+        with self.assertRaisesRegex(validator.CatalogError, "main 分支"):
+            action_input.process(
+                inputs,
+                root=root,
+                github_ref_name="review",
+                github_repository="hobbyL/TextbookLibrary",
+            )
+
+        self.assertTrue((root / source).is_file())
+        self.assertEqual(validator.load_catalog(root)["books"], [])
+
+    def test_action_form_rejects_repository_mismatch_before_processing(self) -> None:
+        root, source = self.add_library_fixture()
+        inputs = {
+            "pdf_path": source,
+            "subject": "math",
+            "grade": "2",
+            "semester": "upper",
+            "edition_id": "pep-math-2a-2024",
+            "title": "人教版数学二年级上册",
+            "publisher": "人民教育出版社",
+            "edition_label": "2024版",
+            "edition_notes": "依据版权页登记版次。",
+            "redistribution_evidence": "https://example.invalid/permission/123",
+            "confirm_public_redistribution": True,
+        }
+
+        with self.assertRaisesRegex(validator.CatalogError, "repository 不一致"):
+            action_input.process(
+                inputs,
+                root=root,
+                github_ref_name="main",
+                github_repository="another-owner/another-library",
+            )
+
+        self.assertTrue((root / source).is_file())
+        self.assertEqual(validator.load_catalog(root)["books"], [])
 
 
 if __name__ == "__main__":
