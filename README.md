@@ -27,15 +27,16 @@ tests/test_validate_catalog.py
 
 Upload the PDF with its original filename into the correct subject/grade/semester
 directory on `main`, then run **Actions → Process textbook catalog → Run
-workflow**. The `auto` choice processes every unregistered PDF added in the
-latest commit. It reads subject, grade and semester from each directory,
+workflow**. The `auto` choice finds the most recent commit that changed PDFs
+and processes its unregistered PDF files, even if later code-only commits exist.
+It reads subject, grade and semester from each directory,
 generates edition IDs from paths, reads edition labels from filenames, and
 extracts titles, publishers and evidence pages from the first eight PDF pages.
-If the latest commit contains no PDFs, `auto` falls back to the only
-unregistered PDF in the repository. Select one item from the dropdown to process
-just that book, or use `pdf_path` for a PDF not listed there. Dropdown choices
-are static and need a workflow-file update only when you want a new book to
-appear as a named choice; they are not needed for `auto` batch processing.
+If no PDF has ever been committed, `auto` falls back to the only unregistered
+PDF in the repository. Select one item from the dropdown to process just that
+book, or use `pdf_path` for a PDF not listed there. Dropdown choices are static
+and need a workflow-file update only when you want a new book to appear as a
+named choice; they are not needed for `auto` batch processing.
 
 When processing a batch, leave the single-book metadata overrides (`edition_id`,
 `title`, `publisher`, `edition_label`, `edition_notes`, optional publication

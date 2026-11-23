@@ -413,7 +413,7 @@ class ValidateCatalogTest(unittest.TestCase):
         self.assertFalse((root / "covers").exists())
         self.assertEqual(validator.load_catalog(root)["books"], [])
 
-    def test_action_auto_processes_all_pdfs_in_latest_commit(self) -> None:
+    def test_action_auto_processes_pdfs_from_latest_pdf_commit(self) -> None:
         root, first_source = self.add_library_fixture()
         second_source = (
             "books/chinese/grade-02/lower/"
@@ -424,6 +424,9 @@ class ValidateCatalogTest(unittest.TestCase):
         second_pdf.write_bytes(one_page_pdf() + b"\n% second fixture\n")
         git(root, "add", "books")
         git(root, "commit", "-qm", "Upload textbook batch")
+        (root / "workflow-update.txt").write_text("code-only commit\n", encoding="utf-8")
+        git(root, "add", "workflow-update.txt")
+        git(root, "commit", "-qm", "Update workflow")
 
         def page_text(_root: Path, pdf_path: str):
             if "/chinese/" in pdf_path:
