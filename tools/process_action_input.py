@@ -173,6 +173,20 @@ def _resolve_pdf_paths(
     if operation == "delete":
         raise catalog_tool.CatalogError("删除操作请从下拉菜单或 pdf_path 明确选择一本书")
 
+    if operation == "update":
+        changed_books = sorted(
+            book["sourcePath"]
+            for book in catalog.get("books", [])
+            if isinstance(book.get("sourcePath"), str)
+            and (root / book["sourcePath"]).is_file()
+            and catalog_tool.sha256_file(root / book["sourcePath"]) != book.get("sha256")
+        )
+        if changed_books:
+            return changed_books
+        raise catalog_tool.CatalogError(
+            "没有发现内容已变化的已登记 PDF；请先在原 sourcePath 替换并提交新版 PDF"
+        )
+
     commits = catalog_tool.git(
         root, "log", "--format=%H", "--diff-filter=AM", "--", "books"
     ).splitlines()
@@ -196,33 +210,13 @@ def _resolve_pdf_paths(
             break
 
     if latest_pdf_changes is not None:
-        if operation == "add":
-            candidates = sorted(
-                path
-                for path in latest_pdf_changes
-                if path not in catalogued and (root / path).is_file()
-            )
-        else:
-            catalog_by_path = {
-                book.get("sourcePath"): book
-                for book in catalog.get("books", [])
-                if isinstance(book.get("sourcePath"), str)
-            }
-            candidates = sorted(
-                path
-                for path in latest_pdf_changes
-                if path in catalog_by_path
-                and (root / path).is_file()
-                and catalog_tool.sha256_file(root / path)
-                != catalog_by_path[path].get("sha256")
-            )
+        candidates = sorted(
+            path
+            for path in latest_pdf_changes
+            if path not in catalogued and (root / path).is_file()
+        )
         if candidates:
             return candidates
-        if operation == "update":
-            raise catalog_tool.CatalogError(
-                "最近一次 PDF 变更中没有与现有书目对应且内容变化的文件；"
-                "请先用同一路径替换已登记 PDF，再选 auto"
-            )
         raise catalog_tool.CatalogError(
             "最近一次 PDF 变更提交中的文件均已登记或不存在；请选择其他未登记 PDF"
         )
@@ -429,7 +423,7 @@ def process(
             }
         )
 
-    for details in prepared_books:
+    for index, details in enumerate(prepared_books):
         action = "更新" if operation == "update" else "登记"
         print(f"开始{action}：{details['pdf_path']}")
         print(f"书名：{details['title']}")
@@ -457,6 +451,10 @@ def process(
             "printing_number": _optional_int(inputs, "printing_number"),
             "evidence_pdf_pages": details["evidence_pages"],
         }
+        if operation == "update":
+            call_args["pending_update_paths"] = [
+                item["pdf_path"] for item in prepared_books[index + 1 :]
+            ]
         book, assets_committed, warnings = add_or_update(root, **call_args)
         for warning in warnings:
             print(f"警告：{warning}", file=sys.stderr)

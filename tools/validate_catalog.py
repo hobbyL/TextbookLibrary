@@ -528,6 +528,7 @@ def update_book(
     printing_date: str | None = None,
     printing_number: int | None = None,
     evidence_pdf_pages: list[int] | None = None,
+    pending_update_paths: list[str] | None = None,
 ) -> tuple[dict, bool, list[str]]:
     """Replace one catalog entry's PDF and metadata at its existing source path."""
     if not re.fullmatch(r"[a-z][a-z0-9_-]*", subject):
@@ -588,8 +589,15 @@ def update_book(
     ):
         raise CatalogError("更新必须保留原书目的学科、年级和学期目录")
 
+    pending_paths = set(pending_update_paths or [])
+    pending_paths.discard(pdf_path)
     remaining = json.loads(json.dumps(catalog))
-    del remaining["books"][book_index]
+    remaining["books"] = [
+        item
+        for item in remaining["books"]
+        if item.get("sourcePath") != pdf_path
+        and item.get("sourcePath") not in pending_paths
+    ]
     validate_catalog_data(root, remaining)
 
     source_pdf, source_path = safe_file(root, pdf_path)
@@ -656,7 +664,13 @@ def update_book(
     pinned = pin_book(root, repository, book)
     candidate = json.loads(json.dumps(catalog))
     candidate["books"][book_index] = pinned
-    warnings = validate_catalog_data(root, candidate)
+    candidate_for_validation = json.loads(json.dumps(candidate))
+    candidate_for_validation["books"] = [
+        item
+        for item in candidate_for_validation["books"]
+        if item.get("sourcePath") not in pending_paths
+    ]
+    warnings = validate_catalog_data(root, candidate_for_validation)
     write_catalog(root, candidate)
     return pinned, assets_committed, warnings
 

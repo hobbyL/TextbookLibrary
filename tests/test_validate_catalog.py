@@ -554,6 +554,61 @@ class ValidateCatalogTest(unittest.TestCase):
         self.assertEqual(updated["editionLabel"], "2025版")
         self.assertEqual(validator.validate_catalog(root), [])
 
+    def test_update_auto_finds_books_changed_in_separate_commits(self) -> None:
+        root, first_source = self.add_library_fixture()
+        first = self.add_book(root, first_source)[0]
+
+        second_source = (
+            "books/chinese/grade-02/lower/语文 统编版 二年级 下册 2017版.pdf"
+        )
+        second_pdf = root / second_source
+        second_pdf.parent.mkdir(parents=True)
+        second_pdf.write_bytes(one_page_pdf() + b"\n% original second PDF\n")
+        second, _, _ = validator.add_book(
+            root,
+            pdf_path=second_source,
+            subject="chinese",
+            grade=2,
+            semester="lower",
+            edition_id="chinese-grade-02-lower-2017-test",
+            title="义务教育教科书 语文 二年级 下册",
+            publisher="人民教育出版社",
+            edition_label="2017版",
+            edition_notes="测试语文教材记录。",
+        )
+
+        (root / first_source).write_bytes(one_page_pdf() + b"\n% updated math PDF\n")
+        git(root, "add", "--", first_source)
+        git(root, "commit", "-qm", "Update math PDF")
+        (root / second_source).write_bytes(one_page_pdf() + b"\n% updated Chinese PDF\n")
+        git(root, "add", "--", second_source)
+        git(root, "commit", "-qm", "Update Chinese PDF")
+
+        def page_text(_root: Path, pdf_path: str):
+            if "/chinese/" in pdf_path:
+                return [(1, "义务教育教科书 语文 二年级 下册\n人民教育出版社")]
+            return [(1, "义务教育教科书 数学 二年级 上册\n人民教育出版社")]
+
+        with patch.object(action_input, "_read_first_pages", side_effect=page_text):
+            action_input.process(
+                {"operation": "update", "pdf_choice": "auto"},
+                root=root,
+                github_ref_name="main",
+                github_repository="hobbyL/TextbookLibrary",
+            )
+
+        catalog = validator.load_catalog(root)
+        self.assertCountEqual(
+            [book["sourcePath"] for book in catalog["books"]],
+            [first_source, second_source],
+        )
+        updated_by_path = {book["sourcePath"]: book for book in catalog["books"]}
+        self.assertEqual(updated_by_path[first_source]["editionId"], first["editionId"])
+        self.assertEqual(updated_by_path[second_source]["editionId"], second["editionId"])
+        self.assertNotEqual(updated_by_path[first_source]["sha256"], first["sha256"])
+        self.assertNotEqual(updated_by_path[second_source]["sha256"], second["sha256"])
+        self.assertEqual(validator.validate_catalog(root), [])
+
     def test_action_delete_requires_confirmation_and_removes_selected_book(self) -> None:
         root, source = self.add_library_fixture()
         book = self.add_book(root, source)[0]
