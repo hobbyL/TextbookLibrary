@@ -3,43 +3,42 @@ name: Process textbook catalog
 on:
   workflow_dispatch:
     inputs:
+      pdf_choice:
+        description: Select one PDF, or auto-process all new PDFs from the latest commit
+        required: true
+        default: auto
+        type: choice
+        options:
+          - auto
+          - 数学二年级上册（2024版）
+          - 数学二年级下册（2022版）
+          - 语文二年级上册（2024版）
+          - 语文二年级下册（2017版）
+          - 英语二年级上册（2013版）
+          - 英语二年级下册（2013版）
       pdf_path:
-        description: Repository path of the uploaded PDF
-        required: true
+        description: Optional repository path for a PDF missing from the dropdown
+        required: false
         type: string
-      subject:
-        description: Subject slug used by the catalog path
-        required: true
-        type: string
-      grade:
-        description: Grade
-        required: true
-        type: choice
-        options: ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"]
-      semester:
-        description: Semester directory containing the PDF
-        required: true
-        type: choice
-        options: [upper, lower]
       edition_id:
-        description: Stable lowercase edition ID, separate from the PDF filename
-        required: true
+        description: Optional stable ID; leave blank to generate one from the path
+        required: false
         type: string
       title:
-        description: Exact textbook title
-        required: true
+        description: Optional override; auto-detected from the PDF title page
+        required: false
         type: string
       publisher:
-        description: Publisher shown in the book
-        required: true
+        description: Optional override; auto-detected from the PDF when possible
+        required: false
         type: string
       edition_label:
-        description: Edition label supported by the book
-        required: true
+        description: Edition label; leave blank to read one from the filename
+        required: false
         type: string
       edition_notes:
-        description: Verified edition facts and notes
-        required: true
+        description: Optional override; otherwise generated from detected book pages
+        required: false
         type: string
       curriculum_standard:
         description: Curriculum standard, if printed in the book
@@ -66,16 +65,15 @@ on:
         required: false
         type: string
       evidence_pdf_pages:
-        description: Comma-separated PDF pages supporting edition facts
-        required: true
-        default: "1"
+        description: Optional override; otherwise detected from the book pages
+        required: false
         type: string
       redistribution_evidence:
-        description: Verifiable rightsholder permission reference
+        description: Rightsholder permission reference covering every selected PDF
         required: true
         type: string
       confirm_public_redistribution:
-        description: Confirm the PDF may be redistributed publicly
+        description: Confirm every selected PDF may be redistributed publicly
         required: true
         default: false
         type: boolean

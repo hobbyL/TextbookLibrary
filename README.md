@@ -27,14 +27,30 @@ tests/test_validate_catalog.py
 
 Upload the PDF with its original filename into the correct subject/grade/semester
 directory on `main`, then run **Actions → Process textbook catalog → Run
-workflow**. The form takes the PDF path, subject, grade, semester, edition ID,
-title, publisher and edition facts. The workflow renders the cover, extracts PDF
-metrics, validates the fixed source URL, updates `catalog.json`, and pushes the
-generated catalog change. The `editionId` is separate from the original PDF
-filename; the filename is preserved in `sourcePath`.
+workflow**. The `auto` choice processes every unregistered PDF added in the
+latest commit. It reads subject, grade and semester from each directory,
+generates edition IDs from paths, reads edition labels from filenames, and
+extracts titles, publishers and evidence pages from the first eight PDF pages.
+If the latest commit contains no PDFs, `auto` falls back to the only
+unregistered PDF in the repository. Select one item from the dropdown to process
+just that book, or use `pdf_path` for a PDF not listed there. Dropdown choices
+are static and need a workflow-file update only when you want a new book to
+appear as a named choice; they are not needed for `auto` batch processing.
 
-`upper` means 上册 and `lower` means 下册. The selected semester must match the
-PDF's directory; the workflow rejects mismatches. No filename change is needed.
+When processing a batch, leave the single-book metadata overrides (`edition_id`,
+`title`, `publisher`, `edition_label`, `edition_notes`, optional publication
+facts and `evidence_pdf_pages`) blank. Scanned PDFs or books with an unrecognized
+layout can be processed individually with manual overrides.
+
+The form requires a traceable redistribution-evidence reference covering all
+selected PDFs and an explicit confirmation that all may be redistributed
+publicly. A PDF cannot establish that the rightsholder permits public
+redistribution. The workflow renders covers, extracts PDF metrics, validates
+the fixed source URLs, updates `catalog.json`, and pushes the generated catalog
+change. Original filenames are preserved in `sourcePath`.
+
+`upper` means 上册 and `lower` means 下册. The path must follow
+`books/<subject>/grade-<n>/<upper|lower>/<filename>.pdf`.
 
 Example paths:
 
@@ -43,13 +59,12 @@ books/math/grade-02/upper/数学 人教版 二年级 上册 2024版.pdf
 books/math/grade-02/lower/数学 人教版 二年级 下册 2022版.pdf
 ```
 
-The workflow requires exact title, publisher, edition label/notes and a
-traceable redistribution-evidence reference. Optional publication/printing
-facts remain null when unknown. The confirmation input is an explicit curator
-assertion; the workflow cannot determine whether the evidence grants permission.
+Optional publication/printing facts remain null when unknown. The confirmation
+input is an explicit curator assertion; the workflow cannot determine whether
+the evidence grants permission.
 The PDF becomes public as soon as it is uploaded, before the Action runs. Only
-upload material authorized for public redistribution. The form rejects a path
-whose subject/grade/semester directory conflicts with the submitted fields.
+upload material authorized for public redistribution. The PDF path supplies its
+subject, grade and semester, so these values do not need to be entered twice.
 
 The Action runs only on `main` and needs `contents: write` to push the generated
 catalog. If repository policy blocks workflow writes, allow write access for

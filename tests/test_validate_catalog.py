@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import process_action_input as action_input
@@ -341,36 +342,137 @@ class ValidateCatalogTest(unittest.TestCase):
     def test_action_form_processes_original_filename_and_updates_catalog(self) -> None:
         root, source = self.add_library_fixture()
         inputs = {
-            "pdf_path": source,
-            "subject": "math",
-            "grade": "2",
-            "semester": "upper",
-            "edition_id": "pep-math-2a-2024",
-            "title": "人教版数学二年级上册",
-            "publisher": "人民教育出版社",
-            "edition_label": "2024版",
-            "edition_notes": "依据版权页登记版次。",
             "approval_year": "2024",
-            "evidence_pdf_pages": "1",
             "redistribution_evidence": "https://example.invalid/permission/123",
             "confirm_public_redistribution": True,
         }
 
-        action_input.process(
-            inputs,
-            root=root,
-            github_ref_name="main",
-            github_repository="hobbyL/TextbookLibrary",
-        )
+        with patch.object(
+            action_input,
+            "_read_first_pages",
+            return_value=[
+                (
+                    1,
+                    "义务教育教科书 数学 二年级 上册\n"
+                    "人民教育出版社 课程教材研究所 编著",
+                ),
+            ],
+        ):
+            action_input.process(
+                inputs,
+                root=root,
+                github_ref_name="main",
+                github_repository="hobbyL/TextbookLibrary",
+            )
 
         catalog = validator.load_catalog(root)
         self.assertEqual(len(catalog["books"]), 1)
         book = catalog["books"][0]
         self.assertEqual(book["sourcePath"], source)
-        self.assertEqual(book["editionId"], "pep-math-2a-2024")
+        self.assertRegex(
+            book["editionId"], r"^math-grade-02-upper-2024-[a-f0-9]{10}$"
+        )
+        self.assertEqual(book["subject"], "math")
+        self.assertEqual(book["grade"], 2)
+        self.assertEqual(book["semester"], "上")
+        self.assertEqual(book["title"], "义务教育教科书 数学 二年级 上册")
+        self.assertEqual(book["publisher"], "人民教育出版社")
+        self.assertEqual(book["editionLabel"], "2024版")
+        self.assertIn("证据页：1", book["editionNotes"])
         self.assertEqual(book["evidencePdfPages"], [1])
         self.assertTrue(book["downloadable"])
         self.assertEqual(validator.validate_catalog(root), [])
+
+    def test_action_requires_path_when_multiple_pdfs_are_unregistered(self) -> None:
+        root, _ = self.add_library_fixture()
+        second_pdf = root / "books/math/grade-02/lower/another-book.pdf"
+        second_pdf.parent.mkdir(parents=True)
+        second_pdf.write_bytes(one_page_pdf())
+
+        with self.assertRaisesRegex(validator.CatalogError, "无法唯一确定"):
+            action_input.process(
+                {},
+                root=root,
+                github_ref_name="main",
+                github_repository="hobbyL/TextbookLibrary",
+            )
+
+    def test_action_auto_processes_all_pdfs_in_latest_commit(self) -> None:
+        root, first_source = self.add_library_fixture()
+        second_source = (
+            "books/chinese/grade-02/lower/"
+            "语文 统编版 二年级 下册 2017版.pdf"
+        )
+        second_pdf = root / second_source
+        second_pdf.parent.mkdir(parents=True)
+        second_pdf.write_bytes(one_page_pdf() + b"\n% second fixture\n")
+        git(root, "add", "books")
+        git(root, "commit", "-qm", "Upload textbook batch")
+
+        def page_text(_root: Path, pdf_path: str):
+            if "/chinese/" in pdf_path:
+                return [(1, "义务教育教科书 语文 二年级 下册\n人民教育出版社")]
+            return [(1, "义务教育教科书 数学 二年级 上册\n人民教育出版社")]
+
+        inputs = {
+            "pdf_choice": "auto",
+            "redistribution_evidence": "https://example.invalid/permission/batch",
+            "confirm_public_redistribution": True,
+        }
+        head_before = git(root, "rev-parse", "HEAD")
+        with patch.object(action_input, "_read_first_pages", side_effect=page_text):
+            with self.assertRaisesRegex(validator.CatalogError, "单本元数据覆盖项"):
+                action_input.process(
+                    {**inputs, "title": "不应套用到所有书的标题"},
+                    root=root,
+                    github_ref_name="main",
+                    github_repository="hobbyL/TextbookLibrary",
+                )
+        self.assertEqual(git(root, "rev-parse", "HEAD"), head_before)
+
+        with patch.object(action_input, "_read_first_pages", side_effect=page_text):
+            action_input.process(
+                inputs,
+                root=root,
+                github_ref_name="main",
+                github_repository="hobbyL/TextbookLibrary",
+            )
+
+        catalog = validator.load_catalog(root)
+        self.assertCountEqual(
+            [book["sourcePath"] for book in catalog["books"]],
+            [first_source, second_source],
+        )
+        self.assertEqual(len(catalog["books"]), 2)
+        self.assertEqual(validator.validate_catalog(root), [])
+
+    def test_pdf_choice_resolves_to_its_repository_path(self) -> None:
+        root, source = self.add_library_fixture()
+        selected = action_input._resolve_pdf_paths(
+            root,
+            {"pdf_choice": "数学二年级上册（2024版）"},
+            validator.load_catalog(root),
+        )
+
+        self.assertEqual(selected, [source])
+
+    def test_metadata_inference_prefers_complete_title_page_line(self) -> None:
+        title, publisher, pages = action_input._infer_book_metadata(
+            [
+                (1, "下册二年级义务教育教科书"),
+                (
+                    3,
+                    "义务教育教科书 语文 二年级 下册\n"
+                    "http://www.pep.com.cn",
+                ),
+            ],
+            grade=2,
+            semester="lower",
+        )
+
+        self.assertEqual(title, "义务教育教科书 语文 二年级 下册")
+        self.assertEqual(publisher, "人民教育出版社")
+        self.assertEqual(pages, [3])
 
     def test_action_form_rejects_non_main_branch_before_processing(self) -> None:
         root, source = self.add_library_fixture()
