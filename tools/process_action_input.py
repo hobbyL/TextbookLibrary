@@ -187,58 +187,15 @@ def _resolve_pdf_paths(
             "没有发现内容已变化的已登记 PDF；请先在原 sourcePath 替换并提交新版 PDF"
         )
 
-    commits = catalog_tool.git(
-        root, "log", "--format=%H", "--diff-filter=AM", "--", "books"
-    ).splitlines()
-    latest_pdf_changes = None
-    for commit in commits:
-        changed_paths = catalog_tool.git(
-            root,
-            "diff-tree",
-            "--root",
-            "--no-commit-id",
-            "--name-only",
-            "-z",
-            "-r",
-            commit,
-            "--",
-            "books",
-        ).split("\0")
-        pdf_changes = [path for path in changed_paths if path.lower().endswith(".pdf")]
-        if pdf_changes:
-            latest_pdf_changes = pdf_changes
-            break
-
-    if latest_pdf_changes is not None:
-        candidates = sorted(
-            path
-            for path in latest_pdf_changes
-            if path not in catalogued and (root / path).is_file()
-        )
-        if candidates:
-            return candidates
-        raise catalog_tool.CatalogError(
-            "最近一次 PDF 变更提交中的文件均已登记或不存在；请选择其他未登记 PDF"
-        )
-
-    if operation == "add":
-        candidates = sorted(
-            path.relative_to(root).as_posix()
-            for path in (root / "books").rglob("*.pdf")
-            if path.is_file() and path.relative_to(root).as_posix() not in catalogued
-        )
-    else:
-        raise catalog_tool.CatalogError(
-            "没有找到最近变更的已登记 PDF；请先替换 PDF 或明确选择书目"
-        )
-    if len(candidates) == 1:
+    candidates = sorted(
+        path.relative_to(root).as_posix()
+        for path in (root / "books").rglob("*.pdf")
+        if path.is_file() and path.relative_to(root).as_posix() not in catalogued
+    )
+    if candidates:
         return candidates
-    if not candidates:
-        raise catalog_tool.CatalogError(
-            "没有找到尚未登记的 PDF；请先将 PDF 上传到 books/，或填写 pdf_path"
-        )
     raise catalog_tool.CatalogError(
-        "无法唯一确定要处理的 PDF，请填写 pdf_path：" + ", ".join(candidates)
+        "没有找到尚未登记的 PDF；请先将 PDF 上传到 books/，或填写 pdf_path"
     )
 
 

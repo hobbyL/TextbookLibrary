@@ -470,19 +470,25 @@ class ValidateCatalogTest(unittest.TestCase):
         self.assertTrue(book["downloadable"])
         self.assertEqual(validator.validate_catalog(root), [])
 
-    def test_action_requires_path_when_multiple_pdfs_are_unregistered(self) -> None:
-        root, _ = self.add_library_fixture()
+    def test_action_add_auto_returns_all_unregistered_pdfs(self) -> None:
+        root, first_source = self.add_library_fixture()
         second_pdf = root / "books/math/grade-02/lower/another-book.pdf"
         second_pdf.parent.mkdir(parents=True)
         second_pdf.write_bytes(one_page_pdf())
 
-        with self.assertRaisesRegex(validator.CatalogError, "无法唯一确定"):
-            action_input.process(
-                {},
-                root=root,
-                github_ref_name="main",
-                github_repository="hobbyL/TextbookLibrary",
-            )
+        candidates = action_input._resolve_pdf_paths(
+            root, {"pdf_choice": "auto"}, validator.load_catalog(root)
+        )
+
+        self.assertEqual(
+            candidates,
+            sorted(
+                [
+                    first_source,
+                    "books/math/grade-02/lower/another-book.pdf",
+                ]
+            ),
+        )
 
     def test_action_processes_single_book_without_confirmation(self) -> None:
         root, source = self.add_library_fixture()
@@ -639,8 +645,11 @@ class ValidateCatalogTest(unittest.TestCase):
         self.assertEqual(validator.load_catalog(root)["books"], [])
         self.assertEqual(validator.validate_catalog(root), [])
 
-    def test_action_auto_processes_pdfs_from_latest_pdf_commit(self) -> None:
+    def test_action_add_auto_processes_all_unregistered_pdfs_across_commits(self) -> None:
         root, first_source = self.add_library_fixture()
+        git(root, "add", "--", first_source)
+        git(root, "commit", "-qm", "Upload math PDF")
+
         second_source = (
             "books/chinese/grade-02/lower/"
             "语文 统编版 二年级 下册 2017版.pdf"
@@ -648,8 +657,8 @@ class ValidateCatalogTest(unittest.TestCase):
         second_pdf = root / second_source
         second_pdf.parent.mkdir(parents=True)
         second_pdf.write_bytes(one_page_pdf() + b"\n% second fixture\n")
-        git(root, "add", "books")
-        git(root, "commit", "-qm", "Upload textbook batch")
+        git(root, "add", "--", second_source)
+        git(root, "commit", "-qm", "Upload Chinese PDF")
         (root / "workflow-update.txt").write_text("code-only commit\n", encoding="utf-8")
         git(root, "add", "workflow-update.txt")
         git(root, "commit", "-qm", "Update workflow")

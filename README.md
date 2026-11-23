@@ -26,9 +26,9 @@ tests/test_validate_catalog.py
 
 Choose `operation` in **Actions → Process textbook catalog → Run workflow**.
 
-- `add` registers new PDFs. `auto` finds unregistered PDFs from the most recent
-  PDF-changing commit and can process them as a batch. A dropdown item or
-  `pdf_path` processes one PDF.
+- `add` registers new PDFs. `auto` finds every unregistered PDF in `books/`,
+  including files committed at different times, and processes them as a batch.
+  A dropdown item or `pdf_path` processes one PDF.
 - `update` replaces the PDF behind an existing catalog record. Replace the PDF
   in Git at the exact same `sourcePath`, commit that change to `main`, then run
   `update` with `auto` or select that book. The catalog keeps the same
