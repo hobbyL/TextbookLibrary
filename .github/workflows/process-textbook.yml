@@ -3,8 +3,14 @@ name: Process textbook catalog
 on:
   workflow_dispatch:
     inputs:
+      operation:
+        description: Add a new book, replace an existing record, or delete a book
+        required: true
+        default: add
+        type: choice
+        options: [add, update, delete]
       pdf_choice:
-        description: Select one PDF, or auto-process all new PDFs from the latest commit
+        description: Add uses new PDFs; update uses a changed registered PDF; delete requires one exact book
         required: true
         default: auto
         type: choice
@@ -17,7 +23,7 @@ on:
           - 英语二年级上册（2013版）
           - 英语二年级下册（2013版）
       pdf_path:
-        description: Optional repository path for a PDF missing from the dropdown
+        description: Optional exact PDF path; update replaces the book at this same path
         required: false
         type: string
       edition_id:
@@ -74,6 +80,11 @@ on:
         type: string
       confirm_public_redistribution:
         description: Optional permission verification record for the selected PDFs
+        required: false
+        default: false
+        type: boolean
+      confirm_delete:
+        description: Required safety confirmation when operation is delete
         required: false
         default: false
         type: boolean

@@ -345,6 +345,56 @@ class ValidateCatalogTest(unittest.TestCase):
         self.assertEqual(book["redistributionEvidence"], "")
         self.assertEqual(validator.validate_catalog(root), [])
 
+    def test_update_replaces_existing_record_and_removes_old_cover(self) -> None:
+        root, source = self.add_library_fixture()
+        original = self.add_book(root, source)[0]
+        old_cover_path = original["coverPath"]
+        old_sha = original["sha256"]
+        old_edition_id = original["editionId"]
+
+        (root / source).write_bytes(one_page_pdf() + b"\n% replacement textbook PDF\n")
+        git(root, "add", "--", source)
+        git(root, "commit", "-qm", "Replace current textbook PDF")
+
+        updated, assets_committed, warnings = validator.update_book(
+            root,
+            pdf_path=source,
+            subject="math",
+            grade=2,
+            semester="upper",
+            edition_id=old_edition_id,
+            title="人教版数学二年级上册新版",
+            publisher="人民教育出版社",
+            edition_label="2025版",
+            edition_notes="已更新当前版次记录。",
+            public_redistribution_confirmed=False,
+        )
+
+        self.assertTrue(assets_committed)
+        self.assertEqual(warnings, [])
+        self.assertEqual(updated["sourcePath"], source)
+        self.assertEqual(updated["editionId"], old_edition_id)
+        self.assertNotEqual(updated["sha256"], old_sha)
+        self.assertNotEqual(updated["coverPath"], old_cover_path)
+        self.assertFalse((root / old_cover_path).exists())
+        self.assertEqual(len(validator.load_catalog(root)["books"]), 1)
+        self.assertEqual(validator.load_catalog(root)["books"][0]["title"], "人教版数学二年级上册新版")
+        self.assertEqual(validator.validate_catalog(root), [])
+
+    def test_delete_removes_current_book_pdf_and_unshared_cover(self) -> None:
+        root, source = self.add_library_fixture()
+        book = self.add_book(root, source)[0]
+        cover_path = book["coverPath"]
+
+        deleted = validator.delete_book(root, source_path=source)
+
+        self.assertEqual(deleted["editionId"], book["editionId"])
+        self.assertEqual(deleted["coverPath"], cover_path)
+        self.assertFalse((root / source).exists())
+        self.assertFalse((root / cover_path).exists())
+        self.assertEqual(validator.load_catalog(root)["books"], [])
+        self.assertEqual(validator.validate_catalog(root), [])
+
     def test_add_refuses_staged_changes_before_rehoming(self) -> None:
         root, source = self.add_library_fixture()
         (root / "unrelated.txt").write_text("keep staged", encoding="utf-8")
@@ -453,6 +503,85 @@ class ValidateCatalogTest(unittest.TestCase):
         self.assertTrue(book["downloadable"])
         self.assertFalse(book["redistributionPermissionVerified"])
         self.assertEqual(book["redistributionEvidence"], "")
+        self.assertEqual(validator.validate_catalog(root), [])
+
+    def test_action_updates_existing_record_in_place(self) -> None:
+        root, source = self.add_library_fixture()
+        original = self.add_book(root, source)[0]
+        old_sha = original["sha256"]
+        (root / source).write_bytes(one_page_pdf() + b"\n% updated through action\n")
+        git(root, "add", "--", source)
+        git(root, "commit", "-qm", "Replace textbook PDF")
+
+        head_before = git(root, "rev-parse", "HEAD")
+        with self.assertRaisesRegex(validator.CatalogError, "保留原 editionId"):
+            action_input.process(
+                {
+                    "operation": "update",
+                    "pdf_choice": "auto",
+                    "edition_id": "replacement-id-is-not-allowed",
+                    "title": "新版数学教材",
+                    "publisher": "人民教育出版社",
+                    "edition_label": "2025版",
+                },
+                root=root,
+                github_ref_name="main",
+                github_repository="hobbyL/TextbookLibrary",
+            )
+        self.assertEqual(git(root, "rev-parse", "HEAD"), head_before)
+
+        action_input.process(
+            {
+                "operation": "update",
+                "pdf_choice": "auto",
+                "title": "人教版数学二年级上册新版",
+                "publisher": "人民教育出版社",
+                "edition_label": "2025版",
+                "confirm_public_redistribution": False,
+            },
+            root=root,
+            github_ref_name="main",
+            github_repository="hobbyL/TextbookLibrary",
+        )
+
+        catalog = validator.load_catalog(root)
+        self.assertEqual(len(catalog["books"]), 1)
+        updated = catalog["books"][0]
+        self.assertEqual(updated["sourcePath"], source)
+        self.assertEqual(updated["editionId"], original["editionId"])
+        self.assertNotEqual(updated["sha256"], old_sha)
+        self.assertEqual(updated["title"], "人教版数学二年级上册新版")
+        self.assertEqual(updated["editionLabel"], "2025版")
+        self.assertEqual(validator.validate_catalog(root), [])
+
+    def test_action_delete_requires_confirmation_and_removes_selected_book(self) -> None:
+        root, source = self.add_library_fixture()
+        book = self.add_book(root, source)[0]
+        head_before = git(root, "rev-parse", "HEAD")
+        base_inputs = {"operation": "delete", "pdf_path": source}
+
+        with self.assertRaisesRegex(validator.CatalogError, "confirm_delete"):
+            action_input.process(
+                base_inputs,
+                root=root,
+                github_ref_name="main",
+                github_repository="hobbyL/TextbookLibrary",
+            )
+
+        self.assertEqual(git(root, "rev-parse", "HEAD"), head_before)
+        self.assertTrue((root / source).is_file())
+        self.assertEqual(len(validator.load_catalog(root)["books"]), 1)
+
+        action_input.process(
+            {**base_inputs, "confirm_delete": True},
+            root=root,
+            github_ref_name="main",
+            github_repository="hobbyL/TextbookLibrary",
+        )
+
+        self.assertFalse((root / source).exists())
+        self.assertFalse((root / book["coverPath"]).exists())
+        self.assertEqual(validator.load_catalog(root)["books"], [])
         self.assertEqual(validator.validate_catalog(root), [])
 
     def test_action_auto_processes_pdfs_from_latest_pdf_commit(self) -> None:

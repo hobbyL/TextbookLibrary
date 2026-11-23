@@ -22,22 +22,30 @@ tests/test_validate_catalog.py
 .github/workflows/process-textbook.yml
 ```
 
-## Add a book through GitHub
+## Manage books through GitHub
 
-Upload the PDF with its original filename into the correct subject/grade/semester
-directory on `main`, then run **Actions → Process textbook catalog → Run
-workflow**. The `auto` choice finds the most recent commit that changed PDFs
-and processes its unregistered PDF files, even if later code-only commits exist.
-It reads subject, grade and semester from each directory,
-generates edition IDs from paths, reads edition labels from filenames, and
-extracts titles, publishers and evidence pages from the first eight PDF pages.
-If no PDF has ever been committed, `auto` falls back to the only unregistered
-PDF in the repository. Select one item from the dropdown to process just that
-book, or use `pdf_path` for a PDF not listed there. Dropdown choices are static
-and need a workflow-file update only when you want a new book to appear as a
-named choice; they are not needed for `auto` batch processing.
+Choose `operation` in **Actions → Process textbook catalog → Run workflow**.
 
-When processing a batch, leave the single-book metadata overrides (`edition_id`,
+- `add` registers new PDFs. `auto` finds unregistered PDFs from the most recent
+  PDF-changing commit and can process them as a batch. A dropdown item or
+  `pdf_path` processes one PDF.
+- `update` replaces the PDF behind an existing catalog record. Replace the PDF
+  in Git at the exact same `sourcePath`, commit that change to `main`, then run
+  `update` with `auto` or select that book. The catalog keeps the same
+  `editionId` and updates its PDF hash, metadata, cover, and download URL in
+  place. A renamed path is not treated as an update target.
+- `delete` removes one catalog record and its current PDF. Choose the exact book
+  from the dropdown or specify its `pdf_path`, then check `confirm_delete`.
+  `auto` is disabled for deletion so a batch cannot be removed accidentally.
+
+For adds and updates, the workflow reads subject, grade and semester from each
+directory, generates IDs for new records, reads edition labels from filenames,
+and extracts titles, publishers and evidence pages from the first eight PDF
+pages. Select a named dropdown item to target a known book, or use `pdf_path` for
+a book not listed there. Dropdown choices are static; they are not required for
+`auto` adds or updates.
+
+When processing a batch, leave single-book metadata overrides (`edition_id`,
 `title`, `publisher`, `edition_label`, `edition_notes`, optional publication
 facts and `evidence_pdf_pages`) blank. Scanned PDFs or books with an unrecognized
 layout can be processed individually with manual overrides.
@@ -50,6 +58,9 @@ confirmation and a nonempty evidence reference are provided. Existing
 verification records are preserved. The workflow renders covers, extracts PDF
 metrics, validates the fixed source URLs, updates `catalog.json`, and pushes
 the generated catalog change. Original filenames are preserved in `sourcePath`.
+Deleting a book removes it from the current branch and current catalog, while
+older Git commits and their immutable download URLs remain in repository
+history.
 
 `upper` means 上册 and `lower` means 下册. The path must follow
 `books/<subject>/grade-<n>/<upper|lower>/<filename>.pdf`.

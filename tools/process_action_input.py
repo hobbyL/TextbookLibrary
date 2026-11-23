@@ -142,7 +142,9 @@ def _infer_book_metadata(
     return title, publisher, evidence_pages
 
 
-def _resolve_pdf_paths(root, inputs: dict, catalog: dict) -> list[str]:
+def _resolve_pdf_paths(
+    root, inputs: dict, catalog: dict, operation: str = "add"
+) -> list[str]:
     catalogued = {
         book.get("sourcePath")
         for book in catalog.get("books", [])
@@ -151,8 +153,10 @@ def _resolve_pdf_paths(root, inputs: dict, catalog: dict) -> list[str]:
     requested = _optional_string(inputs, "pdf_path")
     if requested:
         _, relative = catalog_tool.safe_file(root, requested)
-        if relative in catalogued:
+        if operation == "add" and relative in catalogued:
             raise catalog_tool.CatalogError(f"该 PDF 已登记：{relative}")
+        if operation in {"update", "delete"} and relative not in catalogued:
+            raise catalog_tool.CatalogError(f"该 PDF 尚未登记，无法{operation}：{relative}")
         return [relative]
     choice = _optional_string(inputs, "pdf_choice")
     if choice and choice != "auto":
@@ -160,9 +164,14 @@ def _resolve_pdf_paths(root, inputs: dict, catalog: dict) -> list[str]:
         if not selected:
             raise catalog_tool.CatalogError(f"下拉菜单中的 PDF 选项无效：{choice}")
         _, relative = catalog_tool.safe_file(root, selected)
-        if relative in catalogued:
+        if operation == "add" and relative in catalogued:
             raise catalog_tool.CatalogError(f"该 PDF 已登记：{relative}")
+        if operation in {"update", "delete"} and relative not in catalogued:
+            raise catalog_tool.CatalogError(f"该 PDF 尚未登记，无法{operation}：{relative}")
         return [relative]
+
+    if operation == "delete":
+        raise catalog_tool.CatalogError("删除操作请从下拉菜单或 pdf_path 明确选择一本书")
 
     commits = catalog_tool.git(
         root, "log", "--format=%H", "--diff-filter=AM", "--", "books"
@@ -187,22 +196,47 @@ def _resolve_pdf_paths(root, inputs: dict, catalog: dict) -> list[str]:
             break
 
     if latest_pdf_changes is not None:
-        candidates = sorted(
-            path
-            for path in latest_pdf_changes
-            if path not in catalogued and (root / path).is_file()
-        )
+        if operation == "add":
+            candidates = sorted(
+                path
+                for path in latest_pdf_changes
+                if path not in catalogued and (root / path).is_file()
+            )
+        else:
+            catalog_by_path = {
+                book.get("sourcePath"): book
+                for book in catalog.get("books", [])
+                if isinstance(book.get("sourcePath"), str)
+            }
+            candidates = sorted(
+                path
+                for path in latest_pdf_changes
+                if path in catalog_by_path
+                and (root / path).is_file()
+                and catalog_tool.sha256_file(root / path)
+                != catalog_by_path[path].get("sha256")
+            )
         if candidates:
             return candidates
+        if operation == "update":
+            raise catalog_tool.CatalogError(
+                "最近一次 PDF 变更中没有与现有书目对应且内容变化的文件；"
+                "请先用同一路径替换已登记 PDF，再选 auto"
+            )
         raise catalog_tool.CatalogError(
             "最近一次 PDF 变更提交中的文件均已登记或不存在；请选择其他未登记 PDF"
         )
 
-    candidates = sorted(
-        path.relative_to(root).as_posix()
-        for path in (root / "books").rglob("*.pdf")
-        if path.is_file() and path.relative_to(root).as_posix() not in catalogued
-    )
+    if operation == "add":
+        candidates = sorted(
+            path.relative_to(root).as_posix()
+            for path in (root / "books").rglob("*.pdf")
+            if path.is_file() and path.relative_to(root).as_posix() not in catalogued
+        )
+    else:
+        raise catalog_tool.CatalogError(
+            "没有找到最近变更的已登记 PDF；请先替换 PDF 或明确选择书目"
+        )
     if len(candidates) == 1:
         return candidates
     if not candidates:
@@ -286,7 +320,24 @@ def process(
     if action_repository != repository:
         raise catalog_tool.CatalogError("工作流仓库与 catalog.repository 不一致")
 
-    pdf_paths = _resolve_pdf_paths(root, inputs, catalog)
+    operation = _optional_string(inputs, "operation") or "add"
+    if operation not in {"add", "update", "delete"}:
+        raise catalog_tool.CatalogError(f"不支持的操作：{operation}")
+    pdf_paths = _resolve_pdf_paths(root, inputs, catalog, operation)
+    if operation == "delete":
+        if len(pdf_paths) != 1:
+            raise catalog_tool.CatalogError("一次只能删除一本书")
+        confirmed = inputs.get("confirm_delete")
+        confirmed = confirmed is True or str(confirmed).lower() == "true"
+        if not confirmed:
+            raise catalog_tool.CatalogError("删除前必须勾选 confirm_delete 确认删除所选书籍及当前文件")
+        deleted = catalog_tool.delete_book(root, source_path=pdf_paths[0])
+        print(f"已删除目录记录：{deleted['editionId']}")
+        print(f"已删除 PDF：{deleted['sourcePath']}")
+        if deleted["coverPath"]:
+            print(f"已删除未再使用的封面：{deleted['coverPath']}")
+        return
+
     if len(pdf_paths) > 1:
         per_book_fields = (
             "edition_id",
@@ -315,6 +366,21 @@ def process(
     prepared_books = []
     for pdf_path in pdf_paths:
         subject, grade, semester = _path_metadata(pdf_path)
+        existing = next(
+            (book for book in catalog["books"] if book.get("sourcePath") == pdf_path),
+            None,
+        )
+        if operation == "update" and existing is None:
+            raise catalog_tool.CatalogError(f"更新目标没有已登记记录：{pdf_path}")
+        requested_edition_id = _optional_string(inputs, "edition_id")
+        if (
+            operation == "update"
+            and requested_edition_id
+            and requested_edition_id != existing["editionId"]
+        ):
+            raise catalog_tool.CatalogError(
+                "更新会保留原 editionId；请清空 edition_id 覆盖项"
+            )
         supplied_edition_label = _optional_string(inputs, "edition_label")
         filename_edition_label = _edition_label_from_filename(pdf_path)
         edition_label = supplied_edition_label or filename_edition_label
@@ -349,8 +415,12 @@ def process(
                 "subject": subject,
                 "grade": grade,
                 "semester": semester,
-                "edition_id": _optional_string(inputs, "edition_id")
-                or _generated_edition_id(pdf_path, subject, grade, semester),
+                "edition_id": (
+                    existing["editionId"]
+                    if existing is not None
+                    else _optional_string(inputs, "edition_id")
+                    or _generated_edition_id(pdf_path, subject, grade, semester)
+                ),
                 "title": title,
                 "publisher": publisher,
                 "edition_label": edition_label,
@@ -360,35 +430,38 @@ def process(
         )
 
     for details in prepared_books:
-        print(f"开始登记：{details['pdf_path']}")
+        action = "更新" if operation == "update" else "登记"
+        print(f"开始{action}：{details['pdf_path']}")
         print(f"书名：{details['title']}")
         print(f"出版社：{details['publisher']}")
         print(f"版次标签：{details['edition_label']}")
         print(f"证据页：{', '.join(str(page) for page in details['evidence_pages'])}")
-        book, assets_committed, warnings = catalog_tool.add_book(
-            root,
-            pdf_path=details["pdf_path"],
-            subject=details["subject"],
-            grade=details["grade"],
-            semester=details["semester"],
-            edition_id=details["edition_id"],
-            title=details["title"],
-            publisher=details["publisher"],
-            edition_label=details["edition_label"],
-            edition_notes=details["edition_notes"],
-            redistribution_evidence=redistribution_evidence,
-            public_redistribution_confirmed=confirmed,
-            curriculum_standard=_optional_string(inputs, "curriculum_standard"),
-            approval_year=_optional_int(inputs, "approval_year"),
-            publication_date=_optional_string(inputs, "publication_date"),
-            edition_number=_optional_int(inputs, "edition_number"),
-            printing_date=_optional_string(inputs, "printing_date"),
-            printing_number=_optional_int(inputs, "printing_number"),
-            evidence_pdf_pages=details["evidence_pages"],
-        )
+        add_or_update = catalog_tool.add_book if operation == "add" else catalog_tool.update_book
+        call_args = {
+            "pdf_path": details["pdf_path"],
+            "subject": details["subject"],
+            "grade": details["grade"],
+            "semester": details["semester"],
+            "edition_id": details["edition_id"],
+            "title": details["title"],
+            "publisher": details["publisher"],
+            "edition_label": details["edition_label"],
+            "edition_notes": details["edition_notes"],
+            "redistribution_evidence": redistribution_evidence,
+            "public_redistribution_confirmed": confirmed,
+            "curriculum_standard": _optional_string(inputs, "curriculum_standard"),
+            "approval_year": _optional_int(inputs, "approval_year"),
+            "publication_date": _optional_string(inputs, "publication_date"),
+            "edition_number": _optional_int(inputs, "edition_number"),
+            "printing_date": _optional_string(inputs, "printing_date"),
+            "printing_number": _optional_int(inputs, "printing_number"),
+            "evidence_pdf_pages": details["evidence_pages"],
+        }
+        book, assets_committed, warnings = add_or_update(root, **call_args)
         for warning in warnings:
             print(f"警告：{warning}", file=sys.stderr)
-        print(f"已登记可下载书目：{book['editionId']}")
+        verb = "已登记" if operation == "add" else "已更新"
+        print(f"{verb}可下载书目：{book['editionId']}")
         print(f"PDF：{book['sourcePath']}")
         print(f"SHA-256：{book['sha256']}")
         print(f"source commit：{book['sourceCommit']}")

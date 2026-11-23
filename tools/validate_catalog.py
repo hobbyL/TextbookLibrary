@@ -374,11 +374,11 @@ def _has_staged_changes(root: Path) -> bool:
     return False
 
 
-def _commit_assets(root: Path, paths: list[str], edition_id: str) -> bool:
+def _commit_assets(root: Path, paths: list[str], edition_id: str, *, action: str = "Add") -> bool:
     git(root, "add", "-A", "--", *paths)
     if not _has_staged_changes(root):
         return False
-    git(root, "commit", "-m", f"Add textbook assets: {edition_id}")
+    git(root, "commit", "-m", f"{action} textbook assets: {edition_id}")
     return True
 
 
@@ -505,6 +505,199 @@ def add_book(
     warnings = validate_catalog_data(root, candidate)
     write_catalog(root, candidate)
     return pinned, assets_committed, warnings
+
+
+def update_book(
+    root: Path,
+    *,
+    pdf_path: str,
+    subject: str,
+    grade: int,
+    semester: str,
+    edition_id: str,
+    title: str,
+    publisher: str,
+    edition_label: str,
+    edition_notes: str,
+    redistribution_evidence: str = "",
+    public_redistribution_confirmed: bool = False,
+    curriculum_standard: str | None = None,
+    approval_year: int | None = None,
+    publication_date: str | None = None,
+    edition_number: int | None = None,
+    printing_date: str | None = None,
+    printing_number: int | None = None,
+    evidence_pdf_pages: list[int] | None = None,
+) -> tuple[dict, bool, list[str]]:
+    """Replace one catalog entry's PDF and metadata at its existing source path."""
+    if not re.fullmatch(r"[a-z][a-z0-9_-]*", subject):
+        raise CatalogError("subject 必须是小写 ASCII 标识符")
+    if not 1 <= grade <= 12:
+        raise CatalogError("grade 必须在 1 到 12 之间")
+    if semester not in {"upper", "lower"}:
+        raise CatalogError("semester 必须是 upper 或 lower")
+    for name, value in (
+        ("title", title),
+        ("publisher", publisher),
+        ("edition-label", edition_label),
+        ("edition-notes", edition_notes),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise CatalogError(f"{name} 不能为空")
+    if approval_year is not None and not 1900 <= approval_year <= 2099:
+        raise CatalogError("approval-year 必须在 1900 到 2099 之间")
+    if edition_number is not None and edition_number < 1:
+        raise CatalogError("edition-number 必须大于等于 1")
+    if printing_number is not None and printing_number < 1:
+        raise CatalogError("printing-number 必须大于等于 1")
+    for name, value in (
+        ("curriculum-standard", curriculum_standard),
+        ("publication-date", publication_date),
+        ("printing-date", printing_date),
+    ):
+        if value is not None and not value.strip():
+            raise CatalogError(f"{name} 为空时请省略该参数")
+    if _has_staged_changes(root):
+        raise CatalogError("Git 暂存区已有其他改动；请先提交或取消暂存后重试")
+    if not git(root, "config", "user.name") or not git(root, "config", "user.email"):
+        raise CatalogError("请先配置本地 Git user.name 与 user.email")
+
+    catalog = load_catalog(root)
+    repository = catalog.get("repository")
+    if not isinstance(repository, str) or not re.fullmatch(
+        r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository
+    ):
+        raise CatalogError("catalog.repository 必须是 owner/repository")
+    matches = [
+        (index, book)
+        for index, book in enumerate(catalog["books"])
+        if book.get("sourcePath") == pdf_path
+    ]
+    if len(matches) != 1:
+        raise CatalogError(f"必须通过当前 sourcePath 唯一找到一条记录：{pdf_path}")
+    book_index, previous = matches[0]
+    if previous.get("editionId") != edition_id:
+        raise CatalogError("更新不能更换 editionId；请保持原记录 ID")
+    validate_source_path(previous, pdf_path)
+    if previous.get("coverPath") != f"covers/{previous.get('sha256')}.webp":
+        raise CatalogError("原目录封面路径与 PDF SHA 不匹配，拒绝更新")
+    if (
+        previous.get("subject") != subject
+        or previous.get("grade") != grade
+        or previous.get("semester") != ("上" if semester == "upper" else "下")
+    ):
+        raise CatalogError("更新必须保留原书目的学科、年级和学期目录")
+
+    remaining = json.loads(json.dumps(catalog))
+    del remaining["books"][book_index]
+    validate_catalog_data(root, remaining)
+
+    source_pdf, source_path = safe_file(root, pdf_path)
+    if not source_path.startswith("books/") or source_pdf.suffix.lower() != ".pdf":
+        raise CatalogError("PDF 必须来自书库 books/ 目录")
+    pdf_sha, file_size, page_count, _ = pdf_info(source_pdf)
+    if file_size >= MAX_FILE_BYTES:
+        raise CatalogError(f"PDF 达到或超过 100 MiB，常规 Git 不支持：{source_path}")
+    if any(book.get("sha256") == pdf_sha for book in remaining["books"]):
+        raise CatalogError(f"相同 PDF SHA-256 已登记：{pdf_sha}")
+    pages = sorted(set(evidence_pdf_pages or [1]))
+    if not pages or any(
+        isinstance(page, bool) or not isinstance(page, int) or page < 1 or page > page_count
+        for page in pages
+    ):
+        raise CatalogError("evidence-page 必须是 PDF 范围内的正整数")
+
+    book = dict(previous)
+    book.update(
+        {
+            "title": title.strip(),
+            "publisher": publisher.strip(),
+            "curriculumStandard": curriculum_standard,
+            "approvalYear": approval_year,
+            "editionLabel": edition_label.strip(),
+            "editionNotes": edition_notes.strip(),
+            "publicationDate": publication_date,
+            "editionNumber": edition_number,
+            "printingDate": printing_date,
+            "printingNumber": printing_number,
+            "redistributionPermissionVerified": (
+                public_redistribution_confirmed is True
+                and bool(redistribution_evidence.strip())
+            ),
+            "redistributionEvidence": redistribution_evidence.strip(),
+            "evidencePdfPages": pages,
+        }
+    )
+    validate_source_path(book, source_path)
+    prepared = prepare_pdf(root, source_path)
+    if prepared["sha256"] != pdf_sha:
+        raise CatalogError("PDF 在整理过程中发生变化")
+    book.update(prepared)
+
+    old_cover_path = previous["coverPath"]
+    other_cover_paths = {
+        item.get("coverPath") for item in remaining["books"]
+    }
+    removed_cover = None
+    if old_cover_path != prepared["coverPath"] and old_cover_path not in other_cover_paths:
+        try:
+            old_cover, _ = safe_file(root, old_cover_path)
+        except CatalogError:
+            old_cover = None
+        if old_cover is not None:
+            old_cover.unlink()
+            removed_cover = old_cover_path
+
+    assets = [source_path, prepared["coverPath"]]
+    if removed_cover:
+        assets.append(removed_cover)
+    assets_committed = _commit_assets(root, assets, edition_id, action="Update")
+    book["sourcePath"] = source_path
+    pinned = pin_book(root, repository, book)
+    candidate = json.loads(json.dumps(catalog))
+    candidate["books"][book_index] = pinned
+    warnings = validate_catalog_data(root, candidate)
+    write_catalog(root, candidate)
+    return pinned, assets_committed, warnings
+
+
+def delete_book(root: Path, *, source_path: str) -> dict:
+    """Remove one current catalog entry, its PDF, and its unshared cover."""
+    if _has_staged_changes(root):
+        raise CatalogError("Git 暂存区已有其他改动；请先提交或取消暂存后重试")
+    if not git(root, "config", "user.name") or not git(root, "config", "user.email"):
+        raise CatalogError("请先配置本地 Git user.name 与 user.email")
+
+    catalog = load_catalog(root)
+    matches = [book for book in catalog["books"] if book.get("sourcePath") == source_path]
+    if len(matches) != 1:
+        raise CatalogError(f"必须通过 sourcePath 唯一找到一条记录：{source_path}")
+    book = matches[0]
+    pdf, normalized_path = safe_file(root, source_path)
+    if not normalized_path.startswith("books/") or pdf.suffix.lower() != ".pdf":
+        raise CatalogError("只能删除 books/ 目录内的 PDF")
+    validate_source_path(book, normalized_path)
+    if book.get("coverPath") != f"covers/{book.get('sha256')}.webp":
+        raise CatalogError("目录封面路径与 PDF SHA 不匹配，拒绝删除")
+
+    candidate = json.loads(json.dumps(catalog))
+    candidate["books"] = [
+        item for item in candidate["books"] if item.get("sourcePath") != source_path
+    ]
+    warnings = validate_catalog_data(root, candidate)
+    remaining_cover_paths = {item.get("coverPath") for item in candidate["books"]}
+    cover_path = book.get("coverPath")
+    paths_to_remove = [normalized_path]
+    deleted_cover = None
+    if cover_path and cover_path not in remaining_cover_paths:
+        cover, normalized_cover = safe_file(root, cover_path)
+        paths_to_remove.append(normalized_cover)
+        deleted_cover = normalized_cover
+
+    git(root, "rm", "--", *paths_to_remove)
+    git(root, "commit", "-m", f"Remove textbook: {book['editionId']}")
+    write_catalog(root, candidate)
+    return {"editionId": book["editionId"], "sourcePath": normalized_path, "coverPath": deleted_cover, "warnings": warnings}
 
 
 def main(argv: list[str] | None = None) -> int:
