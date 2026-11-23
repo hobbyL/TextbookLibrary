@@ -50,6 +50,14 @@ def _optional_int(inputs: dict, name: str) -> int | None:
         raise catalog_tool.CatalogError(f"{name} 必须是整数") from error
 
 
+def _optional_string_list(value) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise catalog_tool.CatalogError("内部 PDF 路径列表格式无效")
+    return value
+
+
 def _evidence_pages(inputs: dict, detected_pages: list[int]) -> list[int]:
     raw = str(inputs.get("evidence_pdf_pages", "")).strip()
     if not raw:
@@ -150,6 +158,25 @@ def _resolve_pdf_paths(
         for book in catalog.get("books", [])
         if isinstance(book.get("sourcePath"), str)
     }
+    selected_paths = inputs.get("_selected_pdf_paths")
+    if selected_paths is not None:
+        if (
+            not isinstance(selected_paths, list)
+            or not selected_paths
+            or any(not isinstance(path, str) for path in selected_paths)
+            or len(selected_paths) != len(set(selected_paths))
+        ):
+            raise catalog_tool.CatalogError("push 事件中的 PDF 路径列表无效")
+        resolved = []
+        for path in selected_paths:
+            _, relative = catalog_tool.safe_file(root, path)
+            if operation == "add" and relative in catalogued:
+                raise catalog_tool.CatalogError(f"该 PDF 已登记：{relative}")
+            if operation == "update" and relative not in catalogued:
+                raise catalog_tool.CatalogError(f"该 PDF 尚未登记，无法更新：{relative}")
+            resolved.append(relative)
+        return sorted(resolved)
+
     requested = _optional_string(inputs, "pdf_path")
     if requested:
         _, relative = catalog_tool.safe_file(root, requested)
@@ -410,7 +437,8 @@ def process(
         }
         if operation == "update":
             call_args["pending_update_paths"] = [
-                item["pdf_path"] for item in prepared_books[index + 1 :]
+                *[item["pdf_path"] for item in prepared_books[index + 1 :]],
+                *_optional_string_list(inputs.get("_pending_delete_paths", [])),
             ]
         book, assets_committed, warnings = add_or_update(root, **call_args)
         for warning in warnings:
@@ -423,13 +451,116 @@ def process(
         print("封面资源已提交。" if assets_committed else "封面已在当前 source commit 中。")
 
 
+def _push_pdf_changes(root: Path, before: str, after: str) -> list[tuple[str, str]]:
+    if not before or set(before) == {"0"}:
+        paths = catalog_tool.git(
+            root, "ls-tree", "-r", "--name-only", "-z", after, "--", "books"
+        ).split("\0")
+        return [("A", path) for path in paths if path.lower().endswith(".pdf")]
+
+    fields = catalog_tool.git(
+        root,
+        "diff",
+        "--name-status",
+        "-z",
+        "--no-renames",
+        before,
+        after,
+        "--",
+        "books",
+    ).split("\0")
+    changes = []
+    index = 0
+    while index + 1 < len(fields):
+        status = fields[index]
+        path = fields[index + 1]
+        index += 2
+        if path.lower().endswith(".pdf") and status and status[0] in {"A", "M", "D"}:
+            changes.append((status[0], path))
+    return changes
+
+
+def process_push_changes(
+    *,
+    before: str,
+    root=catalog_tool.ROOT,
+    github_ref_name: str | None = None,
+    github_repository: str | None = None,
+) -> None:
+    branch = github_ref_name or os.environ.get("GITHUB_REF_NAME")
+    if branch != "main":
+        raise catalog_tool.CatalogError("教材 PDF 自动同步只允许 main 分支")
+    repository = github_repository or os.environ.get("GITHUB_REPOSITORY")
+    catalog = catalog_tool.load_catalog(root)
+    if repository != catalog.get("repository"):
+        raise catalog_tool.CatalogError("工作流仓库与 catalog.repository 不一致")
+
+    after = catalog_tool.git(root, "rev-parse", "HEAD")
+    changes = _push_pdf_changes(root, before, after)
+    if not changes:
+        print("本次 push 没有 PDF 变更。")
+        return
+
+    catalog_by_path = {
+        book["sourcePath"]: book
+        for book in catalog.get("books", [])
+        if isinstance(book.get("sourcePath"), str)
+    }
+    add_paths: set[str] = set()
+    update_paths: set[str] = set()
+    delete_paths: set[str] = set()
+    for status, path in changes:
+        existing = catalog_by_path.get(path)
+        exists = (root / path).is_file()
+        if status == "D" or (not exists and existing is not None):
+            if existing is not None:
+                delete_paths.add(path)
+            continue
+        if not exists:
+            continue
+        if existing is None:
+            add_paths.add(path)
+        elif catalog_tool.sha256_file(root / path) != existing.get("sha256"):
+            update_paths.add(path)
+
+    print(f"PDF push 检测：新增 {len(add_paths)}，更新 {len(update_paths)}，删除 {len(delete_paths)}")
+    if update_paths:
+        process(
+            {
+                "operation": "update",
+                "_selected_pdf_paths": sorted(update_paths),
+                "_pending_delete_paths": sorted(delete_paths),
+            },
+            root=root,
+            github_ref_name=branch,
+            github_repository=repository,
+        )
+    if delete_paths:
+        for item in catalog_tool.delete_books(root, source_paths=sorted(delete_paths)):
+            print(f"已自动删除目录记录：{item['editionId']} ({item['sourcePath']})")
+            if item["coverPath"]:
+                print(f"已删除未再使用的封面：{item['coverPath']}")
+    if add_paths:
+        process(
+            {"operation": "add", "_selected_pdf_paths": sorted(add_paths)},
+            root=root,
+            github_ref_name=branch,
+            github_repository=repository,
+        )
+
+
 def main() -> int:
     try:
-        raw = os.environ.get("TEXTBOOK_ACTION_INPUTS", "")
-        inputs = json.loads(raw)
-        if not isinstance(inputs, dict):
-            raise catalog_tool.CatalogError("GitHub Actions 表单输入格式无效")
-        process(inputs)
+        if os.environ.get("GITHUB_EVENT_NAME") == "push":
+            process_push_changes(
+                before=os.environ.get("TEXTBOOK_EVENT_BEFORE", ""),
+            )
+        else:
+            raw = os.environ.get("TEXTBOOK_ACTION_INPUTS", "{}")
+            inputs = json.loads(raw)
+            if not isinstance(inputs, dict):
+                raise catalog_tool.CatalogError("GitHub Actions 表单输入格式无效")
+            process(inputs)
         return 0
     except (catalog_tool.CatalogError, KeyError, OSError, TypeError, ValueError) as error:
         print(f"教材目录自动登记失败：{error}", file=sys.stderr)

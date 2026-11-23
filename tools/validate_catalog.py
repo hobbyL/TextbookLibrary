@@ -675,43 +675,67 @@ def update_book(
     return pinned, assets_committed, warnings
 
 
-def delete_book(root: Path, *, source_path: str) -> dict:
-    """Remove one current catalog entry, its PDF, and its unshared cover."""
+def delete_books(root: Path, *, source_paths: list[str]) -> list[dict]:
+    """Remove catalog entries and any corresponding assets still in the worktree."""
+    if not source_paths or len(source_paths) != len(set(source_paths)):
+        raise CatalogError("删除路径列表不能为空且不能重复")
     if _has_staged_changes(root):
         raise CatalogError("Git 暂存区已有其他改动；请先提交或取消暂存后重试")
     if not git(root, "config", "user.name") or not git(root, "config", "user.email"):
         raise CatalogError("请先配置本地 Git user.name 与 user.email")
 
     catalog = load_catalog(root)
-    matches = [book for book in catalog["books"] if book.get("sourcePath") == source_path]
-    if len(matches) != 1:
-        raise CatalogError(f"必须通过 sourcePath 唯一找到一条记录：{source_path}")
-    book = matches[0]
-    pdf, normalized_path = safe_file(root, source_path)
-    if not normalized_path.startswith("books/") or pdf.suffix.lower() != ".pdf":
-        raise CatalogError("只能删除 books/ 目录内的 PDF")
-    validate_source_path(book, normalized_path)
-    if book.get("coverPath") != f"covers/{book.get('sha256')}.webp":
-        raise CatalogError("目录封面路径与 PDF SHA 不匹配，拒绝删除")
+    books_by_path = {}
+    for source_path in source_paths:
+        matches = [book for book in catalog["books"] if book.get("sourcePath") == source_path]
+        if len(matches) != 1:
+            raise CatalogError(f"必须通过 sourcePath 唯一找到一条记录：{source_path}")
+        book = matches[0]
+        validate_source_path(book, source_path)
+        if book.get("coverPath") != f"covers/{book.get('sha256')}.webp":
+            raise CatalogError(f"目录封面路径与 PDF SHA 不匹配，拒绝删除：{source_path}")
+        books_by_path[source_path] = book
 
     candidate = json.loads(json.dumps(catalog))
     candidate["books"] = [
-        item for item in candidate["books"] if item.get("sourcePath") != source_path
+        item
+        for item in candidate["books"]
+        if item.get("sourcePath") not in books_by_path
     ]
     warnings = validate_catalog_data(root, candidate)
     remaining_cover_paths = {item.get("coverPath") for item in candidate["books"]}
-    cover_path = book.get("coverPath")
-    paths_to_remove = [normalized_path]
-    deleted_cover = None
-    if cover_path and cover_path not in remaining_cover_paths:
-        cover, normalized_cover = safe_file(root, cover_path)
-        paths_to_remove.append(normalized_cover)
-        deleted_cover = normalized_cover
+    paths_to_remove = []
+    deleted = []
+    for source_path, book in books_by_path.items():
+        normalized_path = PurePosixPath(source_path).as_posix()
+        pdf_file = root / normalized_path
+        if pdf_file.is_file():
+            safe_file(root, normalized_path)
+            paths_to_remove.append(normalized_path)
 
-    git(root, "rm", "--", *paths_to_remove)
-    git(root, "commit", "-m", f"Remove textbook: {book['editionId']}")
+        cover_path = book["coverPath"]
+        deleted_cover = None
+        cover_file = root / cover_path
+        if cover_path not in remaining_cover_paths and cover_file.is_file():
+            _, normalized_cover = safe_file(root, cover_path)
+            paths_to_remove.append(normalized_cover)
+            deleted_cover = normalized_cover
+        deleted.append(
+            {"editionId": book["editionId"], "sourcePath": normalized_path, "coverPath": deleted_cover}
+        )
+
+    if paths_to_remove:
+        git(root, "rm", "--", *sorted(set(paths_to_remove)))
+        git(root, "commit", "-m", f"Remove {len(books_by_path)} textbook(s)")
     write_catalog(root, candidate)
-    return {"editionId": book["editionId"], "sourcePath": normalized_path, "coverPath": deleted_cover, "warnings": warnings}
+    for item in deleted:
+        item["warnings"] = warnings
+    return deleted
+
+
+def delete_book(root: Path, *, source_path: str) -> dict:
+    """Remove one current catalog entry and any corresponding current assets."""
+    return delete_books(root, source_paths=[source_path])[0]
 
 
 def main(argv: list[str] | None = None) -> int:

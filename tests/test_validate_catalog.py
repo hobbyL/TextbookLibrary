@@ -700,6 +700,68 @@ class ValidateCatalogTest(unittest.TestCase):
             self.assertEqual(book["redistributionEvidence"], "")
         self.assertEqual(validator.validate_catalog(root), [])
 
+    def test_pdf_push_automatically_adds_updates_and_deletes(self) -> None:
+        root, first_source = self.add_library_fixture()
+        second_source = (
+            "books/chinese/grade-02/lower/"
+            "语文 统编版 二年级 下册 2017版.pdf"
+        )
+        second_pdf = root / second_source
+        second_pdf.parent.mkdir(parents=True)
+        second_pdf.write_bytes(one_page_pdf() + b"\n% original Chinese PDF\n")
+        first_pdf = root / first_source
+        before_add = git(root, "rev-parse", "HEAD")
+        git(root, "add", "books")
+        git(root, "commit", "-qm", "Add math and Chinese PDFs")
+
+        def page_text(_root: Path, pdf_path: str):
+            if "/chinese/" in pdf_path:
+                return [(1, "义务教育教科书 语文 二年级 下册\n人民教育出版社")]
+            return [(1, "义务教育教科书 数学 二年级 上册\n人民教育出版社")]
+
+        with patch.object(action_input, "_read_first_pages", side_effect=page_text):
+            action_input.process_push_changes(
+                before=before_add,
+                root=root,
+                github_ref_name="main",
+                github_repository="hobbyL/TextbookLibrary",
+            )
+        git(root, "add", "catalog.json")
+        git(root, "commit", "-qm", "Register pushed PDFs")
+
+        original_catalog = validator.load_catalog(root)
+        original_first = next(
+            book for book in original_catalog["books"] if book["sourcePath"] == first_source
+        )
+        deleted_book = next(
+            book for book in original_catalog["books"] if book["sourcePath"] == second_source
+        )
+        before_update_delete = git(root, "rev-parse", "HEAD")
+        first_pdf.write_bytes(one_page_pdf() + b"\n% updated math PDF\n")
+        second_pdf.unlink()
+        git(root, "add", "-A", "books")
+        git(root, "commit", "-qm", "Update math and delete Chinese PDF")
+
+        with patch.object(action_input, "_read_first_pages", side_effect=page_text):
+            action_input.process_push_changes(
+                before=before_update_delete,
+                root=root,
+                github_ref_name="main",
+                github_repository="hobbyL/TextbookLibrary",
+            )
+        git(root, "add", "catalog.json")
+        git(root, "commit", "-qm", "Reconcile pushed PDFs")
+
+        catalog = validator.load_catalog(root)
+        self.assertEqual(len(catalog["books"]), 1)
+        updated = catalog["books"][0]
+        self.assertEqual(updated["sourcePath"], first_source)
+        self.assertEqual(updated["editionId"], original_first["editionId"])
+        self.assertNotEqual(updated["sha256"], original_first["sha256"])
+        self.assertFalse((root / second_source).exists())
+        self.assertFalse((root / deleted_book["coverPath"]).exists())
+        self.assertEqual(validator.validate_catalog(root), [])
+
     def test_pdf_choice_resolves_to_its_repository_path(self) -> None:
         root, source = self.add_library_fixture()
         selected = action_input._resolve_pdf_paths(

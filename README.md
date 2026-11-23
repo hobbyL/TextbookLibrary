@@ -24,6 +24,13 @@ tests/test_validate_catalog.py
 
 ## Manage books through GitHub
 
+Pushing PDF changes under `books/` to `main` now triggers this workflow
+automatically. New unregistered PDFs are added, changed PDFs at existing paths
+update their current records, and deleted registered PDFs are removed from the
+catalog along with their current cover. A single push can include several of
+these changes. You do not need to click **Run workflow** for ordinary PDF
+changes.
+
 Choose `operation` in **Actions → Process textbook catalog → Run workflow**.
 
 - `add` registers new PDFs. `auto` finds every unregistered PDF in `books/`,
@@ -36,7 +43,8 @@ Choose `operation` in **Actions → Process textbook catalog → Run workflow**.
   place. A renamed path is not treated as an update target.
 - `delete` removes one catalog record and its current PDF. Choose the exact book
   from the dropdown or specify its `pdf_path`, then check `confirm_delete`.
-  `auto` is disabled for deletion so a batch cannot be removed accidentally.
+  Manual `auto` is disabled for deletion; a PDF deletion committed to `main` is
+  processed automatically from the push change.
 
 For adds and updates, the workflow reads subject, grade and semester from each
 directory, generates IDs for new records, reads edition labels from filenames,

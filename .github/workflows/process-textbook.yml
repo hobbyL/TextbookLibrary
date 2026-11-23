@@ -1,6 +1,10 @@
 name: Process textbook catalog
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "books/**/*.pdf"
   workflow_dispatch:
     inputs:
       operation:
@@ -128,6 +132,7 @@ jobs:
       - name: Process form and update catalog
         env:
           TEXTBOOK_ACTION_INPUTS: ${{ toJson(inputs) }}
+          TEXTBOOK_EVENT_BEFORE: ${{ github.event.before || '' }}
         run: python tools/process_action_input.py
 
       - name: Validate catalog
