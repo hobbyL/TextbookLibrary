@@ -157,6 +157,84 @@
       "sourceCommit": "0c768c60d0eae26868309b1c783f0b410776a7cb",
       "gitBlobSha": "72561385bb275b58f106a153743ed718ddc6300c",
       "checkedAt": "2026-11-23T05:46:36.621776+00:00"
+    },
+    {
+      "subject": "math",
+      "grade": 2,
+      "semester": "下",
+      "title": "义务教育教科书 数学 二年级 下册",
+      "publisher": "人民教育出版社",
+      "editionId": "math-grade-02-lower-2022-14d7c4b4be",
+      "curriculumStandard": null,
+      "approvalYear": null,
+      "editionLabel": "2022版",
+      "editionNotes": "书名“义务教育教科书 数学 二年级 下册”；出版社“人民教育出版社”；版次标签“2022版”（文件名识别）；证据页：2、3。请核对原书版权页。",
+      "publicationDate": null,
+      "editionNumber": null,
+      "printingDate": null,
+      "printingNumber": null,
+      "downloadable": true,
+      "redistributionPermissionVerified": false,
+      "redistributionEvidence": "",
+      "evidencePdfPages": [
+        1
+      ],
+      "sha256": "bff6107bb961afd1277d6b48afee4b402747c3e1479129eb85dde03d7ac2ce82",
+      "bytes": 36738125,
+      "pageCount": 130,
+      "pdfText": {
+        "hasTextLayer": true,
+        "pagesWithText": 126,
+        "characterCount": 33954
+      },
+      "coverPath": "covers/bff6107bb961afd1277d6b48afee4b402747c3e1479129eb85dde03d7ac2ce82.webp",
+      "coverSha256": "093e80439cb805c84d11cd584e7c2bcad3d840eba35b8be124e0372a7a43b2d3",
+      "coverSourcePdfPage": 1,
+      "sourcePath": "books/math/grade-02/lower/数学 人教版 二年级 下册 2022版.pdf",
+      "downloadUrl": "https://raw.githubusercontent.com/hobbyL/TextbookLibrary/56c529a35e64fb90ab3d0c7e7b284d06a0058a1a/books/math/grade-02/lower/%E6%95%B0%E5%AD%A6%20%E4%BA%BA%E6%95%99%E7%89%88%20%E4%BA%8C%E5%B9%B4%E7%BA%A7%20%E4%B8%8B%E5%86%8C%202022%E7%89%88.pdf",
+      "sourceRepository": "hobbyL/TextbookLibrary",
+      "sourceCommit": "56c529a35e64fb90ab3d0c7e7b284d06a0058a1a",
+      "gitBlobSha": "2c3a513bc2bb1844a068761b04de724a5e84e175",
+      "checkedAt": "2026-11-23T06:21:51.316381+00:00"
+    },
+    {
+      "subject": "math",
+      "grade": 2,
+      "semester": "上",
+      "title": "义务教育教科书 数学 二年级 上册",
+      "publisher": "人民教育出版社",
+      "editionId": "math-grade-02-upper-2024-7af2d1a03b",
+      "curriculumStandard": null,
+      "approvalYear": null,
+      "editionLabel": "2024版",
+      "editionNotes": "书名“义务教育教科书 数学 二年级 上册”；出版社“人民教育出版社”；版次标签“2024版”（文件名识别）；证据页：2、3。请核对原书版权页。",
+      "publicationDate": null,
+      "editionNumber": null,
+      "printingDate": null,
+      "printingNumber": null,
+      "downloadable": true,
+      "redistributionPermissionVerified": false,
+      "redistributionEvidence": "",
+      "evidencePdfPages": [
+        1
+      ],
+      "sha256": "df49e1b7465cb6e4f92d97d2f1c7739987f086e7833fe2777bfae9af7fd22d66",
+      "bytes": 11546160,
+      "pageCount": 107,
+      "pdfText": {
+        "hasTextLayer": true,
+        "pagesWithText": 107,
+        "characterCount": 26721
+      },
+      "coverPath": "covers/df49e1b7465cb6e4f92d97d2f1c7739987f086e7833fe2777bfae9af7fd22d66.webp",
+      "coverSha256": "ec457722a5005ac47c6cfe4077d3504670bfe6cf5c2862357716a1356ccbcda4",
+      "coverSourcePdfPage": 1,
+      "sourcePath": "books/math/grade-02/upper/数学 人教版 二年级 上册 2024版.pdf",
+      "downloadUrl": "https://raw.githubusercontent.com/hobbyL/TextbookLibrary/080665e88645f1405fc45779fbec61b5f1d84e09/books/math/grade-02/upper/%E6%95%B0%E5%AD%A6%20%E4%BA%BA%E6%95%99%E7%89%88%20%E4%BA%8C%E5%B9%B4%E7%BA%A7%20%E4%B8%8A%E5%86%8C%202024%E7%89%88.pdf",
+      "sourceRepository": "hobbyL/TextbookLibrary",
+      "sourceCommit": "080665e88645f1405fc45779fbec61b5f1d84e09",
+      "gitBlobSha": "c8cee56a13793eecc88b88b7435a942bf4b299da",
+      "checkedAt": "2026-11-23T06:21:55.516659+00:00"
     }
   ]
 }
