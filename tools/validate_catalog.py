@@ -288,12 +288,6 @@ def validate_catalog_data(root: Path, catalog: dict) -> list[str]:
         validate_source_path(book, book["sourcePath"])
         if book["coverPath"] != f"covers/{book['sha256']}.webp":
             raise CatalogError(f"coverPath 与 PDF SHA 不匹配：{book_id}")
-        if (
-            not book["redistributionPermissionVerified"]
-            or not book["redistributionEvidence"].strip()
-        ):
-            raise CatalogError(f"公开书目缺少再分发核验记录：{book_id}")
-
         pdf, source_path = safe_file(root, book["sourcePath"])
         cover, cover_path = safe_file(root, book["coverPath"])
         file_size = pdf.stat().st_size
@@ -400,8 +394,8 @@ def add_book(
     publisher: str,
     edition_label: str,
     edition_notes: str,
-    redistribution_evidence: str,
-    public_redistribution_confirmed: bool,
+    redistribution_evidence: str = "",
+    public_redistribution_confirmed: bool = False,
     curriculum_standard: str | None = None,
     approval_year: int | None = None,
     publication_date: str | None = None,
@@ -410,10 +404,6 @@ def add_book(
     printing_number: int | None = None,
     evidence_pdf_pages: list[int] | None = None,
 ) -> tuple[dict, bool, list[str]]:
-    if not public_redistribution_confirmed:
-        raise CatalogError("必须明确确认该 PDF 可公开再分发")
-    if not redistribution_evidence.strip():
-        raise CatalogError("必须提供可追溯的公开再分发授权依据")
     if not re.fullmatch(r"[a-z][a-z0-9_-]*", subject):
         raise CatalogError("subject 必须是小写 ASCII 标识符")
     if not 1 <= grade <= 12:
@@ -493,7 +483,9 @@ def add_book(
         "printingDate": printing_date,
         "printingNumber": printing_number,
         "downloadable": True,
-        "redistributionPermissionVerified": True,
+        "redistributionPermissionVerified": (
+            public_redistribution_confirmed is True and bool(redistribution_evidence.strip())
+        ),
         "redistributionEvidence": redistribution_evidence.strip(),
         "evidencePdfPages": pages,
     }
@@ -529,7 +521,7 @@ def main(argv: list[str] | None = None) -> int:
         help="整理 PDF、提交源文件/封面并创建可下载书目",
         description=(
             "一个命令归一 PDF 路径、生成封面、提交源资源并写入 catalog.json。"
-            "需要准确的书目信息和公开再分发授权依据。"
+            "需要准确的书目信息；公开再分发信息可选。"
         ),
     )
     add.add_argument("--pdf", required=True, help="当前 PDF 在书库中的相对路径")
@@ -558,14 +550,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     add.add_argument(
         "--redistribution-evidence",
-        required=True,
-        help="权利方授权依据链接或可追溯记录编号",
+        default="",
+        help="可选的权利方授权依据链接或可追溯记录编号",
     )
     add.add_argument(
         "--confirm-public-redistribution",
         action="store_true",
-        required=True,
-        help="确认你已核实该文件允许公开再分发",
+        help="可选：记录你已核实该文件允许公开再分发",
     )
     add.add_argument(
         "--commit-assets",

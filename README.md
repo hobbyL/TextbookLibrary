@@ -4,8 +4,7 @@ A standalone, source-agnostic library for organizing public textbook files by
 subject, grade, semester and edition. The repository contains its own catalog
 schema and validation tools. It does not depend on any learning app.
 
-Only add a PDF after confirming that it may be redistributed publicly. The
-repository, all files and every Git commit are public. `downloadable: false`
+The repository, all files and every Git commit are public. `downloadable: false`
 only hides an entry from consumers; it does not restrict direct access to its
 file. The MIT license in this repository covers the tooling only, not textbook
 content.
@@ -43,14 +42,14 @@ When processing a batch, leave the single-book metadata overrides (`edition_id`,
 facts and `evidence_pdf_pages`) blank. Scanned PDFs or books with an unrecognized
 layout can be processed individually with manual overrides.
 
-Successful runs require a traceable redistribution-evidence reference covering
-all selected PDFs and an explicit confirmation that all may be redistributed
-publicly. The job checks these before processing files, so the fields can be
-left blank when dispatching just to see the validation error. A PDF cannot
-establish that the rightsholder permits public redistribution. The workflow
-renders covers, extracts PDF metrics, validates the fixed source URLs, updates
-`catalog.json`, and pushes the generated catalog change. Original filenames
-are preserved in `sourcePath`.
+Redistribution information is optional and does not block processing or catalog
+validation. You can leave `redistribution_evidence` blank and
+`confirm_public_redistribution` unchecked, including in `auto` batch mode.
+The catalog records `redistributionPermissionVerified: false` unless both a
+confirmation and a nonempty evidence reference are provided. Existing
+verification records are preserved. The workflow renders covers, extracts PDF
+metrics, validates the fixed source URLs, updates `catalog.json`, and pushes
+the generated catalog change. Original filenames are preserved in `sourcePath`.
 
 `upper` means 上册 and `lower` means 下册. The path must follow
 `books/<subject>/grade-<n>/<upper|lower>/<filename>.pdf`.
@@ -62,12 +61,9 @@ books/math/grade-02/upper/数学 人教版 二年级 上册 2024版.pdf
 books/math/grade-02/lower/数学 人教版 二年级 下册 2022版.pdf
 ```
 
-Optional publication/printing facts remain null when unknown. The confirmation
-input is an explicit curator assertion; the workflow cannot determine whether
-the evidence grants permission.
-The PDF becomes public as soon as it is uploaded, before the Action runs. Only
-upload material authorized for public redistribution. The PDF path supplies its
-subject, grade and semester, so these values do not need to be entered twice.
+Optional publication/printing facts remain null when unknown. The PDF path
+supplies its subject, grade and semester, so these values do not need to be
+entered twice.
 
 The Action runs only on `main` and needs `contents: write` to push the generated
 catalog. If repository policy blocks workflow writes, allow write access for
@@ -76,8 +72,8 @@ catalog. If repository policy blocks workflow writes, allow write access for
 ## Local fallback
 
 The `add` command supports the same metadata flow locally. It preserves the
-original PDF name and requires explicit `--confirm-public-redistribution` and
-`--commit-assets` flags.
+original PDF name and requires the explicit `--commit-assets` flag.
+`--redistribution-evidence` and `--confirm-public-redistribution` are optional.
 
 To validate the complete catalog at any time:
 

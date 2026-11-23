@@ -69,11 +69,11 @@ on:
         required: false
         type: string
       redistribution_evidence:
-        description: Required by the job; must cover every selected PDF
+        description: Optional permission reference for the selected PDFs
         required: false
         type: string
       confirm_public_redistribution:
-        description: The job requires confirmation that every selected PDF may be redistributed
+        description: Optional permission verification record for the selected PDFs
         required: false
         default: false
         type: boolean

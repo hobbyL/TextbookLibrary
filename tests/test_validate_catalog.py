@@ -154,14 +154,15 @@ class ValidateCatalogTest(unittest.TestCase):
         warnings = validator.validate_catalog(self.root)
         self.assertEqual(warnings, [])
 
-    def test_downloadable_book_requires_redistribution_evidence(self) -> None:
+    def test_downloadable_book_allows_unverified_redistribution(self) -> None:
         catalog = validator.load_catalog(self.root)
         catalog["books"][0]["redistributionPermissionVerified"] = False
+        catalog["books"][0]["redistributionEvidence"] = ""
         (self.root / "catalog.json").write_text(
             json.dumps(catalog, ensure_ascii=False), encoding="utf-8"
         )
-        with self.assertRaisesRegex(validator.CatalogError, "再分发核验记录"):
-            validator.validate_catalog(self.root)
+        self.assertTrue(catalog["books"][0]["downloadable"])
+        self.assertEqual(validator.validate_catalog(self.root), [])
 
     def test_path_must_match_book_identity(self) -> None:
         catalog = validator.load_catalog(self.root)
@@ -281,32 +282,68 @@ class ValidateCatalogTest(unittest.TestCase):
         self.assertTrue((root / book["coverPath"]).is_file())
         self.assertEqual(book["sourcePath"], source)
         self.assertEqual(book["editionId"], "pep-math-2a-2024")
+        self.assertTrue(book["redistributionPermissionVerified"])
+        self.assertEqual(
+            book["redistributionEvidence"], "https://example.invalid/permission/123"
+        )
         self.assertEqual(book["sourceCommit"], git(root, "rev-parse", "HEAD"))
         self.assertEqual(len(validator.load_catalog(root)["books"]), 1)
         self.assertEqual(validator.validate_catalog(root), [])
 
-    def test_add_requires_rights_confirmation_before_touching_files(self) -> None:
-        root, source = self.add_library_fixture()
+    def test_add_allows_missing_or_incomplete_rights_metadata(self) -> None:
+        cases = (
+            {},
+            {"public_redistribution_confirmed": True},
+            {"redistribution_evidence": "测试许可记录"},
+        )
+        for rights_metadata in cases:
+            with self.subTest(rights_metadata=rights_metadata):
+                root, source = self.add_library_fixture()
+                book, _, warnings = validator.add_book(
+                    root,
+                    pdf_path=source,
+                    subject="math",
+                    grade=2,
+                    semester="upper",
+                    edition_id="pep-math-2a-2024",
+                    title="人教版数学二年级上册",
+                    publisher="人民教育出版社",
+                    edition_label="2024版",
+                    edition_notes="依据版权页登记版次。",
+                    **rights_metadata,
+                )
 
-        with self.assertRaisesRegex(validator.CatalogError, "明确确认"):
-            validator.add_book(
-                root,
-                pdf_path=source,
-                subject="math",
-                grade=2,
-                semester="upper",
-                edition_id="pep-math-2a-2024",
-                title="人教版数学二年级上册",
-                publisher="人民教育出版社",
-                edition_label="2024版",
-                edition_notes="依据版权页登记版次。",
-                redistribution_evidence="",
-                public_redistribution_confirmed=False,
+                self.assertTrue(book["downloadable"])
+                self.assertFalse(book["redistributionPermissionVerified"])
+                self.assertEqual(
+                    book["redistributionEvidence"],
+                    rights_metadata.get("redistribution_evidence", ""),
+                )
+                self.assertEqual(warnings, [])
+                self.assertEqual(validator.validate_catalog(root), [])
+
+    def test_add_cli_does_not_require_redistribution_arguments(self) -> None:
+        root, source = self.add_library_fixture()
+        with patch.object(validator, "ROOT", root):
+            result = validator.main(
+                [
+                    "add", "--pdf", source,
+                    "--subject", "math", "--grade", "2", "--semester", "upper",
+                    "--edition-id", "pep-math-2a-2024",
+                    "--title", "人教版数学二年级上册",
+                    "--publisher", "人民教育出版社",
+                    "--edition-label", "2024版",
+                    "--edition-notes", "依据版权页登记版次。",
+                    "--commit-assets",
+                ]
             )
 
-        self.assertTrue((root / source).is_file())
-        self.assertEqual(validator.load_catalog(root)["books"], [])
-        self.assertFalse((root / "covers").exists())
+        self.assertEqual(result, 0)
+        book = validator.load_catalog(root)["books"][0]
+        self.assertTrue(book["downloadable"])
+        self.assertFalse(book["redistributionPermissionVerified"])
+        self.assertEqual(book["redistributionEvidence"], "")
+        self.assertEqual(validator.validate_catalog(root), [])
 
     def test_add_refuses_staged_changes_before_rehoming(self) -> None:
         root, source = self.add_library_fixture()
@@ -397,21 +434,26 @@ class ValidateCatalogTest(unittest.TestCase):
                 github_repository="hobbyL/TextbookLibrary",
             )
 
-    def test_action_checks_batch_rights_before_processing(self) -> None:
-        root, _ = self.add_library_fixture()
-        head_before = git(root, "rev-parse", "HEAD")
+    def test_action_processes_single_book_without_confirmation(self) -> None:
+        root, source = self.add_library_fixture()
+        action_input.process(
+            {
+                "pdf_choice": "auto",
+                "confirm_public_redistribution": False,
+                "title": "义务教育教科书 数学 二年级 上册",
+                "publisher": "人民教育出版社",
+            },
+            root=root,
+            github_ref_name="main",
+            github_repository="hobbyL/TextbookLibrary",
+        )
 
-        with self.assertRaisesRegex(validator.CatalogError, "所有选中的 PDF"):
-            action_input.process(
-                {"pdf_choice": "auto"},
-                root=root,
-                github_ref_name="main",
-                github_repository="hobbyL/TextbookLibrary",
-            )
-
-        self.assertEqual(git(root, "rev-parse", "HEAD"), head_before)
-        self.assertFalse((root / "covers").exists())
-        self.assertEqual(validator.load_catalog(root)["books"], [])
+        book = validator.load_catalog(root)["books"][0]
+        self.assertEqual(book["sourcePath"], source)
+        self.assertTrue(book["downloadable"])
+        self.assertFalse(book["redistributionPermissionVerified"])
+        self.assertEqual(book["redistributionEvidence"], "")
+        self.assertEqual(validator.validate_catalog(root), [])
 
     def test_action_auto_processes_pdfs_from_latest_pdf_commit(self) -> None:
         root, first_source = self.add_library_fixture()
@@ -433,11 +475,7 @@ class ValidateCatalogTest(unittest.TestCase):
                 return [(1, "义务教育教科书 语文 二年级 下册\n人民教育出版社")]
             return [(1, "义务教育教科书 数学 二年级 上册\n人民教育出版社")]
 
-        inputs = {
-            "pdf_choice": "auto",
-            "redistribution_evidence": "https://example.invalid/permission/batch",
-            "confirm_public_redistribution": True,
-        }
+        inputs = {"pdf_choice": "auto", "confirm_public_redistribution": False}
         head_before = git(root, "rev-parse", "HEAD")
         with patch.object(action_input, "_read_first_pages", side_effect=page_text):
             with self.assertRaisesRegex(validator.CatalogError, "单本元数据覆盖项"):
@@ -463,6 +501,10 @@ class ValidateCatalogTest(unittest.TestCase):
             [first_source, second_source],
         )
         self.assertEqual(len(catalog["books"]), 2)
+        for book in catalog["books"]:
+            self.assertTrue(book["downloadable"])
+            self.assertFalse(book["redistributionPermissionVerified"])
+            self.assertEqual(book["redistributionEvidence"], "")
         self.assertEqual(validator.validate_catalog(root), [])
 
     def test_pdf_choice_resolves_to_its_repository_path(self) -> None:
